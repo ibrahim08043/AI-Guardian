@@ -1,0 +1,108 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.aiguardian.ai_guardian">
+    <!--
+        Future permissions (not added yet):
+        - android.permission.SYSTEM_ALERT_WINDOW
+        - android.permission.FOREGROUND_SERVICE
+    -->
+
+    <!-- Internet access for VPN DNS forwarding -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Permission to query installed packages (needed for getInstalledApps) -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <!-- Foreground service for domain blocking VPN -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Device Owner permissions for managing device policies -->
+    <uses-permission android:name="android.permission.MANAGE_DEVICE_ADMINS" />
+
+    <application
+        android:label="AI Guardian"
+        android:name="${applicationName}">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data
+                android:name="io.flutter.embedding.android.NormalTheme"
+                android:resource="@style/NormalTheme"
+            />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+
+        <!--
+            BlockActivity — Phase 6 enforcement.
+            Displays when a blocked app is detected.
+            This Activity is part of AI Guardian's package and is never blocked itself.
+        -->
+        <activity
+            android:name=".enforcement.BlockActivity"
+            android:exported="false"
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode" />
+
+        <!--
+            AccessibilityService — Phase 3 foundation.
+            Allows Android to recognize AI Guardian as an accessibility service.
+            The user must manually enable this from Settings → Accessibility.
+        -->
+        <service
+            android:name=".service.AIGuardianAccessibilityService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!--
+            DomainBlockerVpnService — Phase K domain blocking.
+            Local VPN service for DNS-based domain filtering.
+            Completely offline and local to the device.
+        -->
+        <service
+            android:name=".service.DomainBlockerVpnService"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+        </service>
+
+        <!--
+            Device Admin Receiver — Phase L Device Owner.
+            Enables AI Guardian to be provisioned as Device Owner
+            for system-level policy management including Chrome configuration.
+        -->
+        <receiver
+            android:name=".admin.DeviceOwnerReceiver"
+            android:permission="android.permission.BIND_DEVICE_ADMIN"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+                <action android:name="android.app.action.DEVICE_ADMIN_DISABLED" />
+                <action android:name="android.app.action.DEVICE_ADMIN_SECURITY_LOGS_AVAILABLE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin_receiver" />
+        </receiver>
+
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+    </application>
+</manifest>

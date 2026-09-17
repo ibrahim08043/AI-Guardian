@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">AI Guardian</string>
+    <string name="accessibility_service_description">AI Guardian uses this service to detect which app is in the foreground and manage your digital wellness restrictions. No text, passwords, or sensitive data is collected.</string>
+</resources>

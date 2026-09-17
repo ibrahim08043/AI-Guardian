@@ -1,0 +1,22 @@
+name: ai_guardian
+description: AI Guardian - Personal digital wellness companion with local AI capabilities.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+  go_router: ^14.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  very_good_analysis: ^5.1.0
+
+flutter:
+  uses-material-design: true

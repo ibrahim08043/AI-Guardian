@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    AccessibilityService configuration for AI Guardian.
+
+    This is a minimal foundation configuration. It allows Android to recognize
+    the service and lets the user enable/disable it from Accessibility Settings.
+
+    In future phases, event types and capabilities will be refined as needed
+    for foreground app detection and policy enforcement.
+
+    Privacy: canRetrieveWindowContent is OFF. The service will NOT read
+    screen content, text, passwords, or sensitive data.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/accessibility_service_description"
+    android:accessibilityEventTypes="typeAllMask"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:canRetrieveWindowContent="false"
+    android:notificationTimeout="100"
+    android:settingsActivity="com.aiguardian.ai_guardian.MainActivity" />

@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:padding="24dp"
+    android:background="@android:color/white">
+
+    <TextView
+        android:id="@+id/block_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="App Blocked"
+        android:textSize="28sp"
+        android:textStyle="bold"
+        android:textColor="@android:color/black"
+        android:gravity="center"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:id="@+id/block_message"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="This app is currently blocked by AI Guardian."
+        android:textSize="16sp"
+        android:textColor="@android:color/darker_gray"
+        android:gravity="center"
+        android:layout_marginBottom="32dp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Blocked app:"
+        android:textSize="14sp"
+        android:textStyle="bold"
+        android:textColor="@android:color/darker_gray"
+        android:layout_marginBottom="8dp" />
+
+    <TextView
+        android:id="@+id/block_package"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Unknown"
+        android:textSize="14sp"
+        android:textColor="@android:color/black"
+        android:gravity="center"
+        android:padding="12dp"
+        android:background="@android:color/darker_gray"
+        android:textColorHint="@android:color/white"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:id="@+id/block_reason"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textSize="12sp"
+        android:textColor="@android:color/darker_gray"
+        android:gravity="center"
+        android:visibility="gone"
+        android:layout_marginBottom="24dp" />
+
+    <!-- Fixed intervention text from assets -->
+    <TextView
+        android:id="@+id/intervention_text"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textSize="16sp"
+        android:textColor="@android:color/black"
+        android:gravity="center"
+        android:padding="16dp"
+        android:background="#F5F5F5"
+        android:layout_marginBottom="32dp"
+        android:visibility="gone" />
+
+    <Button
+        android:id="@+id/block_back_button"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:text="Back to AI Guardian"
+        android:textSize="16sp"
+        android:textColor="@android:color/white"
+        android:background="@android:color/darker_gray" />
+
+</LinearLayout>

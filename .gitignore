@@ -1,0 +1,72 @@
+# Flutter/Dart
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.iml
+.idea/
+.vscode/
+
+# Android
+android/.gradle/
+android/app/debug/
+android/app/profile/
+android/app/release/
+android/local.properties
+android/key.properties
+*.jks
+*.keystore
+
+# iOS
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+
+# macOS
+macos/Pods/
+macos/Flutter/GeneratedPluginRegistrant.swift
+
+# Platform builds
+**/android/app/build/
+**/ios/build/
+**/macos/build/
+**/linux/build/
+**/windows/build/
+**/web/build/
+
+# Coverage
+coverage/
+
+# Miscellaneous
+*.log
+*.pyc
+.DS_Store
+node_modules/
+
+# Local Claude configuration
+.claude/
+
+# Local AI/model files
+models/
+
+# Local screenshots and debugging dumps
+*.png
+
+# Local Claude configuration
+.claude/
+
+# Local AI/model files
+models/
+
+# Local screenshots and debug dumps
+aiguardian-current.png
+test_screen.png
+window_dump.xml
+
+# Removed AI/LLM source archive
+android/src/main/cpp/llama.tar.gz
+
+# Local debug dump
+window_dump.xml

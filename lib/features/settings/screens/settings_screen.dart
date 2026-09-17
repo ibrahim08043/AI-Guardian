@@ -1,0 +1,785 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+
+import '../../../platform/android_platform_service.dart';
+import '../../../platform/models/platform_info.dart';
+import '../../../platform/models/app_version.dart';
+import '../../../platform/models/accessibility_status.dart';
+import '../../../platform/models/foreground_app_event.dart';
+
+/// Maximum number of foreground events retained in the debug history.
+const int _maxHistorySize = 10;
+
+/// A single entry in the debug foreground event history.
+class _HistoryEntry {
+  final DateTime timestamp;
+  final String packageName;
+  final String policyAction;
+  final bool policyMatched;
+
+  const _HistoryEntry({
+    required this.timestamp,
+    required this.packageName,
+    required this.policyAction,
+    required this.policyMatched,
+  });
+
+  String get timeString {
+    final h = timestamp.hour.toString().padLeft(2, '0');
+    final m = timestamp.minute.toString().padLeft(2, '0');
+    final s = timestamp.second.toString().padLeft(2, '0');
+    return '$h:$m:$s';
+  }
+}
+
+/// Settings screen - application configuration.
+/// This screen will contain:
+/// - General settings (notifications, theme)
+/// - Accessibility service status
+/// - Privacy settings
+/// - About section
+/// - Reset options
+class SettingsScreen extends StatefulWidget {
+  const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  // Native platform data — loaded from Kotlin via MethodChannel.
+  PlatformInfo? _platformInfo;
+  AppVersion? _appVersion;
+  AccessibilityStatus? _accessibilityStatus;
+  bool _isLoading = false;
+  String? _errorMessage;
+
+  // Foreground app detection — streamed from the AccessibilityService.
+  String? _foregroundPackage;
+  String? _foregroundPolicyAction;
+  bool _foregroundPolicyMatched = false;
+  StreamSubscription<ForegroundAppEvent>? _foregroundSubscription;
+
+  // TEMPORARY debug history — in-memory only, lost on app restart.
+  final List<_HistoryEntry> _eventHistory = [];
+
+
+  @override
+  void initState() {
+    super.initState();
+    _loadNativeInfo();
+    _subscribeToForegroundEvents();
+  }
+
+  @override
+  void dispose() {
+    _foregroundSubscription?.cancel();
+    super.dispose();
+  }
+
+  /// Subscribes to foreground app change events from the AccessibilityService.
+  void _subscribeToForegroundEvents() {
+    final stream = AndroidPlatformService.foregroundAppStream;
+    if (stream == null) return;
+
+    _foregroundSubscription = stream.listen(
+      (event) {
+        if (!mounted) return;
+        // TEMPORARY debug logging — package names only, no sensitive data.
+        debugPrint('[ForegroundEvent] Received: ${event.packageName}');
+        setState(() {
+          _foregroundPackage = event.packageName;
+          _foregroundPolicyAction = event.policyAction;
+          _foregroundPolicyMatched = event.policyMatched;
+          // FIFO: prepend new event, drop oldest if over limit.
+          _eventHistory.insert(
+            0,
+            _HistoryEntry(
+              timestamp: DateTime.now(),
+              packageName: event.packageName,
+              policyAction: event.policyAction,
+              policyMatched: event.policyMatched,
+            ),
+          );
+          if (_eventHistory.length > _maxHistorySize) {
+            _eventHistory.removeLast();
+          }
+        });
+      },
+      onError: (error) {
+        // Stream errors are non-fatal — the service continues running.
+      },
+    );
+  }
+
+  /// Clears the temporary debug event history.
+  void _clearEventHistory() {
+    setState(() {
+      _eventHistory.clear();
+    });
+  }
+
+  /// Fetches all native platform information from the Kotlin layer.
+  Future<void> _loadNativeInfo() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final results = await Future.wait([
+        AndroidPlatformService.getPlatformInfo(),
+        AndroidPlatformService.getAppVersion(),
+        AndroidPlatformService.checkAccessibilityStatus(),
+      ]);
+
+      if (!mounted) return;
+
+      setState(() {
+        _platformInfo = results[0] as PlatformInfo?;
+        _appVersion = results[1] as AppVersion?;
+        _accessibilityStatus = results[2] as AccessibilityStatus?;
+        _isLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _errorMessage = 'Failed to load native information.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Settings'),
+      ),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.all(16.0),
+          children: [
+            // -----------------------------------------------------------------
+            // General section
+            // -----------------------------------------------------------------
+            Text(
+              'General',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            Card(
+              child: Column(
+                children: [
+                  SwitchListTile(
+                    title: const Text('Enable Notifications'),
+                    subtitle: const Text('Receive intervention alerts'),
+                    value: true,
+                    onChanged: (value) {
+                      // TODO: Toggle notifications
+                    },
+                  ),
+                  const Divider(height: 1),
+                  SwitchListTile(
+                    title: const Text('Dark Mode'),
+                    subtitle: const Text('Use dark theme'),
+                    value: false,
+                    onChanged: (value) {
+                      // TODO: Toggle theme
+                    },
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // -----------------------------------------------------------------
+            // Services section
+            // -----------------------------------------------------------------
+            Text(
+              'Services',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            Card(
+              child: Column(
+                children: [
+                  ListTile(
+                    leading: const Icon(Icons.accessibility_new),
+                    title: const Text('Accessibility Service'),
+                    subtitle: Text(
+                      _accessibilityStatus?.isEnabled == true
+                          ? 'Enabled'
+                          : 'Not enabled',
+                    ),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () async {
+                      await AndroidPlatformService.openAccessibilitySettings();
+                    },
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // -----------------------------------------------------------------
+            // Native Platform Status (temporary — for bridge verification)
+            // -----------------------------------------------------------------
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Native Platform Status',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.refresh),
+                  onPressed: _isLoading ? null : _loadNativeInfo,
+                  tooltip: 'Refresh',
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            _buildNativeStatusCard(),
+            const SizedBox(height: 16),
+
+            // -----------------------------------------------------------------
+            // TEMPORARY Debug: Policy Engine Status
+            // -----------------------------------------------------------------
+            _buildPolicyEngineStatus(),
+            const SizedBox(height: 16),
+
+            // -----------------------------------------------------------------
+            // TEMPORARY Debug: Recent Foreground Events
+            // -----------------------------------------------------------------
+            _buildDebugEventHistory(),
+            const SizedBox(height: 16),
+
+            // -----------------------------------------------------------------
+            // Privacy section
+            // -----------------------------------------------------------------
+            Text(
+              'Privacy',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            Card(
+              child: Column(
+                children: [
+                  ListTile(
+                    leading: const Icon(Icons.storage),
+                    title: const Text('Local Data'),
+                    subtitle: const Text('All data stored locally'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () {
+                      // TODO: Show data info
+                    },
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    leading: const Icon(Icons.delete_outline),
+                    title: const Text('Clear All Data'),
+                    subtitle: const Text('Reset application'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () {
+                      // TODO: Show confirmation dialog
+                    },
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // -----------------------------------------------------------------
+            // About section
+            // -----------------------------------------------------------------
+            Text(
+              'About',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            Card(
+              child: Column(
+                children: [
+                  ListTile(
+                    leading: const Icon(Icons.info_outline),
+                    title: const Text('Version'),
+                    subtitle: Text(
+                      _appVersion != null
+                          ? '${_appVersion!.versionName} (${_appVersion!.versionCode})'
+                          : 'Loading...',
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    leading: const Icon(Icons.code),
+                    title: const Text('Open Source Licenses'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () {
+                      showLicensePage(
+                        context: context,
+                        applicationName: 'AI Guardian',
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Native status card builder
+  // ---------------------------------------------------------------------------
+
+  Widget _buildNativeStatusCard() {
+    if (_isLoading) {
+      return const Card(
+        child: Padding(
+          padding: EdgeInsets.all(24.0),
+          child: Center(
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                SizedBox(width: 12),
+                Text('Loading native information...'),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (_errorMessage != null) {
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            children: [
+              Icon(
+                Icons.error_outline,
+                color: Theme.of(context).colorScheme.error,
+                size: 32,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                _errorMessage!,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.error,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 12),
+              FilledButton.tonal(
+                onPressed: _loadNativeInfo,
+                child: const Text('Retry'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _NativeInfoRow(
+              icon: Icons.phone_android,
+              label: 'Platform',
+              value: _platformInfo?.platform ?? '—',
+            ),
+            const SizedBox(height: 12),
+            _NativeInfoRow(
+              icon: Icons.code,
+              label: 'Android SDK Version',
+              value: _platformInfo?.sdkVersion != null &&
+                      _platformInfo!.sdkVersion > 0
+                  ? '${_platformInfo!.sdkVersion}'
+                  : '—',
+            ),
+            const SizedBox(height: 12),
+            _NativeInfoRow(
+              icon: Icons.business,
+              label: 'Device Manufacturer',
+              value: _platformInfo?.manufacturer ?? '—',
+            ),
+            const SizedBox(height: 12),
+            _NativeInfoRow(
+              icon: Icons.devices,
+              label: 'Device Model',
+              value: _platformInfo?.model ?? '—',
+            ),
+            const Divider(height: 24),
+            _NativeInfoRow(
+              icon: Icons.tag,
+              label: 'App Version',
+              value: _appVersion != null
+                  ? '${_appVersion!.versionName} (${_appVersion!.versionCode})'
+                  : '—',
+            ),
+            const SizedBox(height: 12),
+            _NativeInfoRow(
+              icon: Icons.accessibility_new,
+              label: 'Accessibility Service',
+              value: _accessibilityStatus?.isEnabled == true
+                  ? 'Enabled'
+                  : 'Not enabled',
+              valueColor: _accessibilityStatus?.isEnabled == true
+                  ? Theme.of(context).colorScheme.primary
+                  : null,
+            ),
+            const SizedBox(height: 12),
+            _NativeInfoRow(
+              icon: Icons.app_registration,
+              label: 'Foreground App',
+              value: _foregroundPackage ?? 'Not detected',
+              valueColor: _foregroundPackage != null
+                  ? Theme.of(context).colorScheme.tertiary
+                  : null,
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  await AndroidPlatformService.openAccessibilitySettings();
+                },
+                icon: const Icon(Icons.settings),
+                label: const Text('Open Accessibility Settings'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEMPORARY debug policy engine status builder
+  // ---------------------------------------------------------------------------
+
+  Widget _buildPolicyEngineStatus() {
+    final isBlock = _foregroundPolicyAction == 'BLOCK';
+    final actionColor = isBlock
+        ? Theme.of(context).colorScheme.error
+        : Theme.of(context).colorScheme.primary;
+    final actionIcon = isBlock ? Icons.block : Icons.check_circle;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.security,
+                  size: 20,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Policy Engine Status',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                  ),
+                ),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .primaryContainer
+                        .withValues(alpha: 0.3),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    'DEBUG',
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: Theme.of(context).colorScheme.primary,
+                          fontWeight: FontWeight.w700,
+                        ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Evaluation only — no enforcement',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            ),
+            const SizedBox(height: 16),
+            if (_foregroundPackage == null)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8.0),
+                child: Center(
+                  child: Text(
+                    'No foreground app detected yet',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color:
+                              Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                  ),
+                ),
+              )
+            else ...[
+              _NativeInfoRow(
+                icon: Icons.app_registration,
+                label: 'Current App',
+                value: _foregroundPackage!,
+                valueColor: Theme.of(context).colorScheme.tertiary,
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Icon(
+                    actionIcon,
+                    size: 20,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Policy',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant,
+                          ),
+                    ),
+                  ),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: actionColor.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      _foregroundPolicyAction!,
+                      style:
+                          Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                fontWeight: FontWeight.w700,
+                                color: actionColor,
+                              ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              _NativeInfoRow(
+                icon: Icons.rule,
+                label: 'Policy Matched',
+                value: _foregroundPolicyMatched ? 'Yes' : 'No',
+                valueColor: _foregroundPolicyMatched
+                    ? Theme.of(context).colorScheme.primary
+                    : Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEMPORARY debug event history builder
+  // ---------------------------------------------------------------------------
+
+  Widget _buildDebugEventHistory() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.bug_report_outlined,
+                  size: 20,
+                  color: Theme.of(context).colorScheme.error,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Recent Foreground Events',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                  ),
+                ),
+                if (_eventHistory.isNotEmpty)
+                  TextButton(
+                    onPressed: _clearEventHistory,
+                    child: const Text('Clear'),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Debug — shows last $_maxHistorySize events (in-memory only)',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            ),
+            const SizedBox(height: 12),
+            if (_eventHistory.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 16.0),
+                child: Center(
+                  child: Text(
+                    'No events yet — switch between apps to see activity',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                  ),
+                ),
+              )
+            else
+              ...List.generate(_eventHistory.length, (index) {
+                final entry = _eventHistory[index];
+                final isBlock = entry.policyAction == 'BLOCK';
+                final actionColor = isBlock
+                    ? Theme.of(context).colorScheme.error
+                    : Theme.of(context).colorScheme.primary;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8.0),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '${_eventHistory.length - index}.',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              color:
+                                  Theme.of(context).colorScheme.onSurfaceVariant,
+                            ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        entry.timeString,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
+                              fontFamily: 'monospace',
+                            ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          entry.packageName,
+                          style:
+                              Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: actionColor.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          entry.policyAction,
+                          style:
+                              Theme.of(context).textTheme.labelSmall?.copyWith(
+                                    color: actionColor,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Native info row widget
+// -----------------------------------------------------------------------------
+
+class _NativeInfoRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color? valueColor;
+
+  const _NativeInfoRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+    this.valueColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(
+          icon,
+          size: 20,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(
+            label,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+          ),
+        ),
+        Flexible(
+          child: Text(
+            value,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: valueColor,
+                ),
+            textAlign: TextAlign.end,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
+    );
+  }
+}
