@@ -7,6 +7,9 @@ import '../../../platform/models/platform_info.dart';
 import '../../../platform/models/app_version.dart';
 import '../../../platform/models/accessibility_status.dart';
 import '../../../platform/models/foreground_app_event.dart';
+import '../../../platform/models/device_owner_status.dart';
+import '../../auth/password_service.dart';
+import '../../auth/password_screen.dart';
 
 /// Maximum number of foreground events retained in the debug history.
 const int _maxHistorySize = 10;
@@ -47,7 +50,12 @@ class SettingsScreen extends StatefulWidget {
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen> {
+class _SettingsScreenState extends State<SettingsScreen>
+    with WidgetsBindingObserver {
+  // Authentication state — starts as NOT authenticated.
+  // The password screen MUST appear before any settings content is accessible.
+  bool _isAuthenticated = false;
+
   // Native platform data — loaded from Kotlin via MethodChannel.
   PlatformInfo? _platformInfo;
   AppVersion? _appVersion;
@@ -64,18 +72,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // TEMPORARY debug history — in-memory only, lost on app restart.
   final List<_HistoryEntry> _eventHistory = [];
 
+  // Device Owner / Admin status — loaded from DevicePolicyManager.
+  DeviceOwnerStatus? _deviceOwnerStatus;
+
+  // Device Owner Protection state — only meaningful when isDeviceOwner == true.
+  bool _isUninstallBlocked = false;
+  Map<String, dynamic>? _chromePolicy;
+
 
   @override
   void initState() {
     super.initState();
-    _loadNativeInfo();
-    _subscribeToForegroundEvents();
+    WidgetsBinding.instance.addObserver(this);
+
+    // _isAuthenticated starts as false — password screen will always appear.
+    // It becomes true ONLY after correct password entry via onVerified callback.
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _foregroundSubscription?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // When the user returns from the Android Device Admin activation/deactivation
+    // screen, refresh the admin status so the UI reflects the real state.
+    if (state == AppLifecycleState.resumed && _isAuthenticated) {
+      _loadDeviceOwnerStatus();
+    }
   }
 
   /// Subscribes to foreground app change events from the AccessibilityService.
@@ -120,6 +147,94 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
+  /// Loads Device Owner / Admin status from Android's DevicePolicyManager.
+  Future<void> _loadDeviceOwnerStatus() async {
+    try {
+      final status = await AndroidPlatformService.getDeviceOwnerStatus();
+      if (!mounted) return;
+      setState(() {
+        _deviceOwnerStatus = status;
+      });
+      // If Device Owner is active, load protection state
+      if (status?.isDeviceOwner == true) {
+        _loadDeviceOwnerProtectionState();
+      }
+    } catch (e) {
+      debugPrint('[SettingsScreen] Failed to load device owner status: $e');
+    }
+  }
+
+  /// Loads the current Device Owner Protection state (uninstall blocking, Chrome policy).
+  /// Only called when Device Owner is confirmed active.
+  Future<void> _loadDeviceOwnerProtectionState() async {
+    try {
+      final isBlocked = await AndroidPlatformService.checkUninstallProtection();
+      final chromePolicy = await AndroidPlatformService.getChromePolicy();
+      if (!mounted) return;
+      setState(() {
+        _isUninstallBlocked = isBlocked;
+        _chromePolicy = chromePolicy;
+      });
+    } catch (e) {
+      debugPrint('[SettingsScreen] Failed to load device owner protection state: $e');
+    }
+  }
+
+  /// Shows a password verification dialog. Returns true if password is correct.
+  Future<bool> _verifyPasswordDialog() async {
+    final passwordController = TextEditingController();
+    bool verified = false;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Password Required'),
+        content: TextField(
+          controller: passwordController,
+          obscureText: true,
+          decoration: const InputDecoration(
+            labelText: 'Enter password',
+            border: OutlineInputBorder(),
+          ),
+          autofocus: true,
+          onSubmitted: (_) async {
+            if (PasswordService.verify(passwordController.text)) {
+              verified = true;
+              Navigator.of(dialogContext).pop();
+            } else {
+              ScaffoldMessenger.of(dialogContext).showSnackBar(
+                const SnackBar(content: Text('Incorrect password')),
+              );
+            }
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              if (PasswordService.verify(passwordController.text)) {
+                verified = true;
+                Navigator.of(dialogContext).pop();
+              } else {
+                ScaffoldMessenger.of(dialogContext).showSnackBar(
+                  const SnackBar(content: Text('Incorrect password')),
+                );
+              }
+            },
+            child: const Text('Verify'),
+          ),
+        ],
+      ),
+    );
+
+    passwordController.dispose();
+    return verified;
+  }
+
   /// Fetches all native platform information from the Kotlin layer.
   Future<void> _loadNativeInfo() async {
     setState(() {
@@ -153,6 +268,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // ── Authentication gate ──────────────────────────────────────────────
+    // Password screen MUST appear before any settings content is shown.
+    if (!_isAuthenticated) {
+      return PasswordScreen(
+        onVerified: () {
+          setState(() {
+            _isAuthenticated = true;
+          });
+          _loadNativeInfo();
+          _loadDeviceOwnerStatus();
+          _subscribeToForegroundEvents();
+        },
+      );
+    }
+    // ── End authentication gate ──────────────────────────────────────────
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Settings'),
@@ -252,6 +383,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 16),
 
             // -----------------------------------------------------------------
+            // Device Administrator status
+            // -----------------------------------------------------------------
+            Text(
+              'Device Administrator',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            _buildDeviceProtectionCard(),
+            const SizedBox(height: 16),
+
+            // -----------------------------------------------------------------
+            // Device Owner Protection (only meaningful when Device Owner is active)
+            // -----------------------------------------------------------------
+            Text(
+              'Device Owner Protection',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            _buildDeviceOwnerProtectionCard(),
+            const SizedBox(height: 16),
+
+            // -----------------------------------------------------------------
             // TEMPORARY Debug: Policy Engine Status
             // -----------------------------------------------------------------
             _buildPolicyEngineStatus(),
@@ -337,6 +494,273 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ],
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Device Administrator status card builder
+  // ---------------------------------------------------------------------------
+
+  Widget _buildDeviceProtectionCard() {
+    final status = _deviceOwnerStatus;
+
+    if (status == null) {
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: const [
+              SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              SizedBox(width: 12),
+              Text('Loading device admin status...'),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final isAdmin = status.isAdminActive;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Device Administrator status
+            _NativeInfoRow(
+              icon: Icons.admin_panel_settings,
+              label: 'Device Administrator',
+              value: isAdmin ? 'Active' : 'Not Active',
+              valueColor: isAdmin
+                  ? Theme.of(context).colorScheme.primary
+                  : Theme.of(context).colorScheme.error,
+            ),
+            const SizedBox(height: 12),
+
+            // Device Owner status (informational — not activatable from UI)
+            _NativeInfoRow(
+              icon: Icons.shield,
+              label: 'Device Owner',
+              value: status.isDeviceOwner ? 'Active' : 'Not Provisioned',
+              valueColor: status.isDeviceOwner
+                  ? Theme.of(context).colorScheme.primary
+                  : Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(height: 16),
+
+            // Activation / deactivation button
+            if (!isAdmin)
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: () async {
+                    try {
+                      final result = await AndroidPlatformService.requestDeviceAdmin();
+                      if (result != null && result['launched'] == true) {
+                        // Status will refresh automatically via didChangeAppLifecycleState
+                      } else if (result != null && result['alreadyActive'] == true) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Device Administrator is already active.')),
+                          );
+                        }
+                      }
+                    } catch (e) {
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Failed to enable Device Administrator: $e')),
+                        );
+                      }
+                    }
+                  },
+                  icon: const Icon(Icons.add_moderator),
+                  label: const Text('Enable Device Administrator'),
+                ),
+              )
+            else
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    try {
+                      final result = await AndroidPlatformService.removeDeviceAdmin();
+                      if (result != null && result['launched'] == true) {
+                        // Status will refresh automatically via didChangeAppLifecycleState
+                      } else if (result != null && result['notActive'] == true) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Device Administrator is not active.')),
+                          );
+                        }
+                      }
+                    } catch (e) {
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Failed to disable Device Administrator: $e')),
+                        );
+                      }
+                    }
+                  },
+                  icon: const Icon(Icons.remove_moderator),
+                  label: const Text('Disable Device Administrator'),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Device Owner Protection card builder
+  // ---------------------------------------------------------------------------
+
+  Widget _buildDeviceOwnerProtectionCard() {
+    final status = _deviceOwnerStatus;
+
+    if (status == null) {
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: const [
+              SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              SizedBox(width: 12),
+              Text('Loading device owner status...'),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final isOwner = status.isDeviceOwner;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Device Owner status
+            _NativeInfoRow(
+              icon: Icons.shield,
+              label: 'Device Owner',
+              value: isOwner ? 'Active' : 'Not Active',
+              valueColor: isOwner
+                  ? Theme.of(context).colorScheme.primary
+                  : Theme.of(context).colorScheme.error,
+            ),
+            const SizedBox(height: 8),
+
+            if (!isOwner)
+              Padding(
+                padding: const EdgeInsets.only(top: 8.0),
+                child: Text(
+                  'Device Owner protections require Device Owner provisioning on a fresh device. '
+                  'These features are unavailable until Device Owner is active.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                ),
+              )
+            else ...[
+              const Divider(height: 24),
+
+              // 1. Protect AI Guardian from uninstall
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                secondary: const Icon(Icons.shield),
+                title: const Text('Protect AI Guardian'),
+                subtitle: Text(
+                  _isUninstallBlocked
+                      ? 'Uninstall is blocked'
+                      : 'Uninstall is allowed',
+                ),
+                value: _isUninstallBlocked,
+                onChanged: (value) async {
+                  // Require password before changing
+                  if (!await _verifyPasswordDialog()) return;
+
+                  try {
+                    if (value) {
+                      await AndroidPlatformService.applyUninstallProtection();
+                    } else {
+                      await AndroidPlatformService.removeUninstallProtection();
+                    }
+                    // Refresh state
+                    _loadDeviceOwnerProtectionState();
+                  } catch (e) {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Failed: $e')),
+                      );
+                    }
+                  }
+                },
+              ),
+              const Divider(height: 1),
+
+              // 2. Block uninstall of selected apps (placeholder)
+              ListTile(
+                leading: const Icon(Icons.app_blocking),
+                title: const Text('Block App Uninstall'),
+                subtitle: const Text('Future capability — requires app discovery'),
+                trailing: const Icon(Icons.chevron_right),
+                enabled: false,
+                onTap: () {
+                  // Future: show app picker for uninstall blocking
+                },
+              ),
+              const Divider(height: 1),
+
+              // 3. Chrome / application restriction policy
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                secondary: const Icon(Icons.language),
+                title: const Text('Chrome URL Restrictions'),
+                subtitle: Text(
+                  _chromePolicy != null
+                      ? 'Policy active (${_chromePolicy!.length} entries)'
+                      : 'No policy active',
+                ),
+                value: _chromePolicy != null,
+                onChanged: (value) async {
+                  // Require password before changing
+                  if (!await _verifyPasswordDialog()) return;
+
+                  try {
+                    if (value) {
+                      // Apply with empty list — user can configure domains later
+                      await AndroidPlatformService.applyChromeBlocklist([]);
+                    } else {
+                      await AndroidPlatformService.clearChromePolicy();
+                    }
+                    // Refresh state
+                    _loadDeviceOwnerProtectionState();
+                  } catch (e) {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Failed: $e')),
+                      );
+                    }
+                  }
+                },
+              ),
+            ],
           ],
         ),
       ),

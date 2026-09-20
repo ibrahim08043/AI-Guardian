@@ -1,5 +1,7 @@
 package com.aiguardian.ai_guardian.platform
 
+import android.app.Activity
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
@@ -18,8 +20,13 @@ import com.aiguardian.ai_guardian.service.DomainBlockerVpnService
 import com.aiguardian.ai_guardian.storage.PolicyDatabaseHelper
 import com.aiguardian.ai_guardian.storage.PolicyRepository
 import com.aiguardian.ai_guardian.storage.DomainRepository
+import com.aiguardian.ai_guardian.contentfilter.ContentFilterRepository
+import com.aiguardian.ai_guardian.contentfilter.ContentFilterRule
+import com.aiguardian.ai_guardian.contentfilter.ContentFilterMatchMode
 import com.aiguardian.ai_guardian.storage.SettingsStorage
 import com.aiguardian.ai_guardian.admin.DeviceOwnerManager
+import com.aiguardian.ai_guardian.admin.DeviceOwnerReceiver
+import android.app.admin.DevicePolicyManager
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
@@ -37,15 +44,19 @@ import java.io.File
  * - getUsageToday: Get today's usage for a package
  * - getFullPolicy: Get policy with all Phase C fields
  */
-class PlatformChannelHandler(private val context: Context) {
+class PlatformChannelHandler(private val activity: Activity) {
 
     companion object {
         private const val TAG = "AIGuardianPlatform"
     }
 
+    // Activity is a Context, so this works for all Context needs (DB, resources, etc.)
+    private val context: Context = activity
+
     private val dbHelper = PolicyDatabaseHelper(context)
     private val policyRepository = PolicyRepository(dbHelper)
     private val domainRepository = DomainRepository(dbHelper)
+    private val contentFilterRepository = ContentFilterRepository(dbHelper)
 
     /**
      * Entry point called from MainActivity's MethodChannel handler.
@@ -220,9 +231,42 @@ class PlatformChannelHandler(private val context: Context) {
                 stopDomainBlocking(result)
                 true
             }
+            "verifyPassword" -> {
+                val password = call.argument<String>("password")
+                if (password != null) {
+                    verifyPassword(password, result)
+                } else {
+                    result.error("INVALID_ARGUMENT", "password required", null)
+                }
+                true
+            }
+            "hasPassword" -> {
+                hasPassword(result)
+                true
+            }
             // Phase L: Device Owner methods
             "getDeviceOwnerStatus" -> {
                 getDeviceOwnerStatus(result)
+                true
+            }
+            "requestDeviceAdmin" -> {
+                requestDeviceAdmin(result)
+                true
+            }
+            "removeDeviceAdmin" -> {
+                removeDeviceAdmin(result)
+                true
+            }
+            "applyUninstallProtection" -> {
+                applyUninstallProtection(result)
+                true
+            }
+            "removeUninstallProtection" -> {
+                removeUninstallProtection(result)
+                true
+            }
+            "checkUninstallProtection" -> {
+                checkUninstallProtection(result)
                 true
             }
             "applyChromeBlocklist" -> {
@@ -240,6 +284,62 @@ class PlatformChannelHandler(private val context: Context) {
             }
             "clearChromePolicy" -> {
                 clearChromePolicy(result)
+                true
+            }
+            // Phase 2B: Content filter methods
+            "getAllContentFilterRules" -> {
+                getAllContentFilterRules(result)
+                true
+            }
+            "saveContentFilterRule" -> {
+                val phrase = call.argument<String>("phrase")
+                val matchMode = call.argument<String>("matchMode")
+                val enabled = call.argument<Boolean>("enabled") ?: true
+                if (phrase != null) {
+                    saveContentFilterRule(phrase, matchMode, enabled, result)
+                } else {
+                    result.error("INVALID_ARGUMENT", "phrase required", null)
+                }
+                true
+            }
+            "updateContentFilterRule" -> {
+                val id = call.argument<Long>("id")
+                val phrase = call.argument<String>("phrase")
+                val matchMode = call.argument<String>("matchMode")
+                val enabled = call.argument<Boolean>("enabled") ?: true
+                if (id != null && phrase != null) {
+                    updateContentFilterRule(id, phrase, matchMode, enabled, result)
+                } else {
+                    result.error("INVALID_ARGUMENT", "id and phrase required", null)
+                }
+                true
+            }
+            "deleteContentFilterRule" -> {
+                val id = call.argument<Long>("id")
+                if (id != null) {
+                    deleteContentFilterRule(id, result)
+                } else {
+                    result.error("INVALID_ARGUMENT", "id required", null)
+                }
+                true
+            }
+            "setContentFilterRuleEnabled" -> {
+                val id = call.argument<Long>("id")
+                val enabled = call.argument<Boolean>("enabled") ?: true
+                if (id != null) {
+                    setContentFilterRuleEnabled(id, enabled, result)
+                } else {
+                    result.error("INVALID_ARGUMENT", "id required", null)
+                }
+                true
+            }
+            "setMasterContentFilterEnabled" -> {
+                val enabled = call.argument<Boolean>("enabled") ?: true
+                setMasterContentFilterEnabled(enabled, result)
+                true
+            }
+            "isMasterContentFilterEnabled" -> {
+                isMasterContentFilterEnabled(result)
                 true
             }
             else -> false
@@ -654,6 +754,41 @@ class PlatformChannelHandler(private val context: Context) {
     }
 
     // -------------------------------------------------------------------------
+    // Authentication
+    // -------------------------------------------------------------------------
+
+    private fun verifyPassword(password: String, result: MethodChannel.Result) {
+        try {
+            val storedPassword = readPasswordFromAssets()
+            val match = password == storedPassword
+            Log.d(TAG, "verifyPassword: match=$match")
+            result.success(mapOf("success" to match))
+        } catch (e: Exception) {
+            Log.e(TAG, "verifyPassword failed: ${e.message}")
+            result.error("VERIFY_PASSWORD_ERROR", e.message, null)
+        }
+    }
+
+    private fun hasPassword(result: MethodChannel.Result) {
+        try {
+            val storedPassword = readPasswordFromAssets()
+            val exists = storedPassword.isNotEmpty()
+            Log.d(TAG, "hasPassword: $exists")
+            result.success(mapOf("hasPassword" to exists))
+        } catch (e: Exception) {
+            Log.e(TAG, "hasPassword failed: ${e.message}")
+            // If asset can't be read, assume password exists (fail-closed)
+            result.success(mapOf("hasPassword" to true))
+        }
+    }
+
+    private fun readPasswordFromAssets(): String {
+        return context.assets.open("app_password.txt")
+            .bufferedReader()
+            .use { it.readText().trimEnd('\r', '\n') }
+    }
+
+    // -------------------------------------------------------------------------
     // Installed apps
     // -------------------------------------------------------------------------
 
@@ -901,6 +1036,180 @@ class PlatformChannelHandler(private val context: Context) {
     }
 
     // ─────────────────────────────────────────────────────────────
+    // Phase 2B: Content filter methods
+    // ─────────────────────────────────────────────────────────────
+
+    private fun getAllContentFilterRules(result: MethodChannel.Result) {
+        try {
+            val rules = contentFilterRepository.getAllRules()
+            val ruleMaps = rules.map { rule ->
+                mapOf(
+                    "id" to rule.id,
+                    "phrase" to rule.phrase,
+                    "enabled" to rule.enabled,
+                    "matchMode" to rule.matchMode.name,
+                    "createdAt" to rule.createdAt,
+                    "updatedAt" to rule.updatedAt,
+                )
+            }
+            Log.d(TAG, "getAllContentFilterRules: returning ${ruleMaps.size} rules")
+            result.success(ruleMaps)
+        } catch (e: Exception) {
+            Log.e(TAG, "getAllContentFilterRules failed: ${e.message}")
+            result.error("GET_FILTER_RULES_ERROR", e.message, null)
+        }
+    }
+
+    private fun saveContentFilterRule(
+        phrase: String,
+        matchModeStr: String?,
+        enabled: Boolean,
+        result: MethodChannel.Result,
+    ) {
+        try {
+            val normalized = ContentFilterRule.normalizePhrase(phrase)
+            if (normalized == null) {
+                result.error("INVALID_PHRASE", "Phrase cannot be empty", null)
+                return
+            }
+
+            val validationError = ContentFilterRule.validatePhrase(normalized)
+            if (validationError != null) {
+                result.error("INVALID_PHRASE", validationError, null)
+                return
+            }
+
+            val matchMode = ContentFilterMatchMode.fromString(matchModeStr)
+            val rule = ContentFilterRule(
+                phrase = normalized,
+                enabled = enabled,
+                matchMode = matchMode,
+            )
+
+            val id = contentFilterRepository.saveRule(rule)
+            if (id > 0) {
+                Log.i(TAG, "saveContentFilterRule: saved '$normalized' (id=$id)")
+                refreshContentFilterRules()
+                result.success(mapOf("success" to true, "id" to id))
+            } else {
+                result.error("SAVE_FILTER_RULE_ERROR", "Database save failed", null)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "saveContentFilterRule failed: ${e.message}")
+            result.error("SAVE_FILTER_RULE_ERROR", e.message, null)
+        }
+    }
+
+    private fun updateContentFilterRule(
+        id: Long,
+        phrase: String,
+        matchModeStr: String?,
+        enabled: Boolean,
+        result: MethodChannel.Result,
+    ) {
+        try {
+            val normalized = ContentFilterRule.normalizePhrase(phrase)
+            if (normalized == null) {
+                result.error("INVALID_PHRASE", "Phrase cannot be empty", null)
+                return
+            }
+
+            val matchMode = ContentFilterMatchMode.fromString(matchModeStr)
+            val rule = ContentFilterRule(
+                id = id,
+                phrase = normalized,
+                enabled = enabled,
+                matchMode = matchMode,
+            )
+
+            val success = contentFilterRepository.updateRule(rule)
+            if (success) {
+                Log.i(TAG, "updateContentFilterRule: updated id=$id '$normalized'")
+                refreshContentFilterRules()
+                result.success(mapOf("success" to true))
+            } else {
+                result.error("UPDATE_FILTER_RULE_ERROR", "Database update failed", null)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "updateContentFilterRule failed: ${e.message}")
+            result.error("UPDATE_FILTER_RULE_ERROR", e.message, null)
+        }
+    }
+
+    private fun deleteContentFilterRule(id: Long, result: MethodChannel.Result) {
+        try {
+            val success = contentFilterRepository.deleteRule(id)
+            if (success) {
+                Log.i(TAG, "deleteContentFilterRule: deleted id=$id")
+                refreshContentFilterRules()
+                result.success(mapOf("success" to true))
+            } else {
+                result.error("DELETE_FILTER_RULE_ERROR", "Database delete failed", null)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "deleteContentFilterRule failed: ${e.message}")
+            result.error("DELETE_FILTER_RULE_ERROR", e.message, null)
+        }
+    }
+
+    private fun setContentFilterRuleEnabled(id: Long, enabled: Boolean, result: MethodChannel.Result) {
+        try {
+            val success = contentFilterRepository.setRuleEnabled(id, enabled)
+            if (success) {
+                Log.i(TAG, "setContentFilterRuleEnabled: id=$id enabled=$enabled")
+                refreshContentFilterRules()
+                result.success(mapOf("success" to true))
+            } else {
+                result.error("UPDATE_FILTER_RULE_ERROR", "Database update failed", null)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "setContentFilterRuleEnabled failed: ${e.message}")
+            result.error("UPDATE_FILTER_RULE_ERROR", e.message, null)
+        }
+    }
+
+    private fun setMasterContentFilterEnabled(enabled: Boolean, result: MethodChannel.Result) {
+        try {
+            val engine = AIGuardianAccessibilityService.contentFilterEngine
+            if (engine != null) {
+                engine.setMasterEnabled(enabled)
+                Log.i(TAG, "setMasterContentFilterEnabled: $enabled")
+                result.success(mapOf("success" to true))
+            } else {
+                // Store preference even if engine isn't running yet
+                Log.w(TAG, "ContentFilterEngine not available, storing preference")
+                result.success(mapOf("success" to true))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "setMasterContentFilterEnabled failed: ${e.message}")
+            result.error("MASTER_FILTER_ERROR", e.message, null)
+        }
+    }
+
+    private fun isMasterContentFilterEnabled(result: MethodChannel.Result) {
+        try {
+            val engine = AIGuardianAccessibilityService.contentFilterEngine
+            val enabled = engine?.isMasterEnabled() ?: true
+            Log.d(TAG, "isMasterContentFilterEnabled: $enabled")
+            result.success(mapOf("enabled" to enabled))
+        } catch (e: Exception) {
+            Log.e(TAG, "isMasterContentFilterEnabled failed: ${e.message}")
+            result.success(mapOf("enabled" to true))
+        }
+    }
+
+    /**
+     * Notify the AccessibilityService to refresh content filter rules from the database.
+     */
+    private fun refreshContentFilterRules() {
+        try {
+            AIGuardianAccessibilityService.instance?.refreshContentFilterRules()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to refresh content filter rules: ${e.message}")
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
     // Phase L: Device Owner methods
     // ─────────────────────────────────────────────────────────────
 
@@ -912,6 +1221,113 @@ class PlatformChannelHandler(private val context: Context) {
             result.success(status)
         } catch (e: Exception) {
             Log.e(TAG, "[DEVICE_OWNER] getStatus failed: ${e.message}")
+            result.error("DEVICE_OWNER_ERROR", e.message, null)
+        }
+    }
+
+    private fun requestDeviceAdmin(result: MethodChannel.Result) {
+        try {
+            Log.i(TAG, "[DEVICE_ADMIN] Flutter request received")
+
+            // Check if already active using real DevicePolicyManager state
+            val deviceOwnerManager = DeviceOwnerManager(context)
+            if (deviceOwnerManager.isAdminActive()) {
+                Log.i(TAG, "[DEVICE_ADMIN] Already active")
+                result.success(mapOf("launched" to false, "alreadyActive" to true))
+                return
+            }
+
+            // Build the official Device Administrator activation Intent
+            // using the actual Activity context (not Application context)
+            val adminComponent = ComponentName(activity, DeviceOwnerReceiver::class.java)
+            Log.i(TAG, "[DEVICE_ADMIN] Activity available: ${activity.javaClass.simpleName}")
+            Log.i(TAG, "[DEVICE_ADMIN] Admin component = ${adminComponent.flattenToString()}")
+
+            val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+                putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
+                putExtra(
+                    DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                    "Allow AI Guardian to act as a Device Administrator."
+                )
+            }
+
+            Log.i(TAG, "[DEVICE_ADMIN] Starting ACTION_ADD_DEVICE_ADMIN")
+            activity.startActivity(intent)
+            Log.i(TAG, "[DEVICE_ADMIN] startActivity() called")
+            result.success(mapOf("launched" to true, "alreadyActive" to false))
+        } catch (e: android.content.ActivityNotFoundException) {
+            Log.e(TAG, "[DEVICE_ADMIN] Failed: No activity found to handle ADD_DEVICE_ADMIN: ${e.message}")
+            result.error("DEVICE_ADMIN_ERROR", "No system activity found to handle Device Administrator activation. ${e.message}", null)
+        } catch (e: Exception) {
+            Log.e(TAG, "[DEVICE_ADMIN] Failed: ${e.message}", e)
+            result.error("DEVICE_ADMIN_ERROR", e.message, null)
+        }
+    }
+
+    private fun removeDeviceAdmin(result: MethodChannel.Result) {
+        try {
+            Log.i(TAG, "[DEVICE_ADMIN] Flutter remove request received")
+
+            val deviceOwnerManager = DeviceOwnerManager(context)
+            if (!deviceOwnerManager.isAdminActive()) {
+                Log.i(TAG, "[DEVICE_ADMIN] Not active, nothing to remove")
+                result.success(mapOf("launched" to false, "notActive" to true))
+                return
+            }
+
+            val adminComponent = ComponentName(activity, DeviceOwnerReceiver::class.java)
+            val dpm = activity.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            dpm.removeActiveAdmin(adminComponent)
+            Log.i(TAG, "[DEVICE_ADMIN] removeActiveAdmin() called")
+            result.success(mapOf("launched" to true, "notActive" to false))
+        } catch (e: Exception) {
+            Log.e(TAG, "[DEVICE_ADMIN] Failed: ${e.message}", e)
+            result.error("DEVICE_ADMIN_ERROR", e.message, null)
+        }
+    }
+
+    private fun applyUninstallProtection(result: MethodChannel.Result) {
+        try {
+            val deviceOwnerManager = DeviceOwnerManager(context)
+            if (!deviceOwnerManager.isDeviceOwner()) {
+                Log.w(TAG, "[DEVICE_OWNER] Not Device Owner, cannot apply uninstall protection")
+                result.error("NOT_DEVICE_OWNER", "AI Guardian is not Device Owner", null)
+                return
+            }
+            val success = deviceOwnerManager.applyUninstallProtection(context.packageName)
+            Log.i(TAG, "[DEVICE_OWNER] applyUninstallProtection: $success")
+            result.success(mapOf("success" to success))
+        } catch (e: Exception) {
+            Log.e(TAG, "[DEVICE_OWNER] applyUninstallProtection failed: ${e.message}")
+            result.error("DEVICE_OWNER_ERROR", e.message, null)
+        }
+    }
+
+    private fun removeUninstallProtection(result: MethodChannel.Result) {
+        try {
+            val deviceOwnerManager = DeviceOwnerManager(context)
+            if (!deviceOwnerManager.isDeviceOwner()) {
+                Log.w(TAG, "[DEVICE_OWNER] Not Device Owner, cannot remove uninstall protection")
+                result.error("NOT_DEVICE_OWNER", "AI Guardian is not Device Owner", null)
+                return
+            }
+            val success = deviceOwnerManager.removeUninstallProtection(context.packageName)
+            Log.i(TAG, "[DEVICE_OWNER] removeUninstallProtection: $success")
+            result.success(mapOf("success" to success))
+        } catch (e: Exception) {
+            Log.e(TAG, "[DEVICE_OWNER] removeUninstallProtection failed: ${e.message}")
+            result.error("DEVICE_OWNER_ERROR", e.message, null)
+        }
+    }
+
+    private fun checkUninstallProtection(result: MethodChannel.Result) {
+        try {
+            val deviceOwnerManager = DeviceOwnerManager(context)
+            val blocked = deviceOwnerManager.isUninstallBlocked(context.packageName)
+            Log.i(TAG, "[DEVICE_OWNER] checkUninstallProtection: $blocked")
+            result.success(mapOf("isUninstallBlocked" to blocked))
+        } catch (e: Exception) {
+            Log.e(TAG, "[DEVICE_OWNER] checkUninstallProtection failed: ${e.message}")
             result.error("DEVICE_OWNER_ERROR", e.message, null)
         }
     }

@@ -37,7 +37,7 @@ class PolicyDatabaseHelper(context: Context) : SQLiteOpenHelper(
     companion object {
         private const val TAG = "AIGuardianDB"
         private const val DATABASE_NAME = "ai_guardian.db"
-        private const val DATABASE_VERSION = 3
+        private const val DATABASE_VERSION = 4
 
         // Table name
         const val TABLE_POLICIES = "policies"
@@ -74,12 +74,22 @@ class PolicyDatabaseHelper(context: Context) : SQLiteOpenHelper(
         const val COLUMN_DOMAIN_ENABLED = "enabled"
         const val COLUMN_DOMAIN_CREATED_AT = "created_at"
         const val COLUMN_DOMAIN_UPDATED_AT = "updated_at"
+
+        // Content filter rules table (Phase 2B)
+        const val TABLE_CONTENT_FILTER_RULES = "content_filter_rules"
+        const val COLUMN_FILTER_ID = "id"
+        const val COLUMN_FILTER_PHRASE = "phrase"
+        const val COLUMN_FILTER_ENABLED = "enabled"
+        const val COLUMN_FILTER_MATCH_MODE = "match_mode"
+        const val COLUMN_FILTER_CREATED_AT = "created_at"
+        const val COLUMN_FILTER_UPDATED_AT = "updated_at"
     }
 
     override fun onCreate(db: SQLiteDatabase) {
         createPoliciesTable(db)
         createUsageSessionsTable(db)
         createDomainsTable(db)
+        createContentFilterRulesTable(db)
         Log.i(TAG, "Database tables created successfully (v$DATABASE_VERSION)")
     }
 
@@ -91,6 +101,9 @@ class PolicyDatabaseHelper(context: Context) : SQLiteOpenHelper(
         }
         if (oldVersion < 3) {
             migrateV2ToV3(db)
+        }
+        if (oldVersion < 4) {
+            migrateV3ToV4(db)
         }
     }
 
@@ -183,6 +196,33 @@ class PolicyDatabaseHelper(context: Context) : SQLiteOpenHelper(
                 $COLUMN_DOMAIN_ENABLED INTEGER NOT NULL DEFAULT 1,
                 $COLUMN_DOMAIN_CREATED_AT INTEGER NOT NULL,
                 $COLUMN_DOMAIN_UPDATED_AT INTEGER NOT NULL
+            )
+        """.trimIndent()
+        db.execSQL(sql)
+    }
+
+    /**
+     * Migration from v3 to v4: Add content filter rules table.
+     */
+    private fun migrateV3ToV4(db: SQLiteDatabase) {
+        try {
+            createContentFilterRulesTable(db)
+            Log.i(TAG, "Migration v3→v4 completed successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "Migration v3→v4 failed: ${e.message}")
+            throw e
+        }
+    }
+
+    private fun createContentFilterRulesTable(db: SQLiteDatabase) {
+        val sql = """
+            CREATE TABLE $TABLE_CONTENT_FILTER_RULES (
+                $COLUMN_FILTER_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                $COLUMN_FILTER_PHRASE TEXT NOT NULL,
+                $COLUMN_FILTER_ENABLED INTEGER NOT NULL DEFAULT 1,
+                $COLUMN_FILTER_MATCH_MODE TEXT NOT NULL DEFAULT 'CONTAINS',
+                $COLUMN_FILTER_CREATED_AT INTEGER NOT NULL,
+                $COLUMN_FILTER_UPDATED_AT INTEGER NOT NULL
             )
         """.trimIndent()
         db.execSQL(sql)

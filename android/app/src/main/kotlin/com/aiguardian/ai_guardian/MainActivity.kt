@@ -13,6 +13,8 @@ import com.aiguardian.ai_guardian.storage.PolicyDatabaseHelper
 import com.aiguardian.ai_guardian.storage.PolicyRepository
 import com.aiguardian.ai_guardian.storage.DomainRepository
 import com.aiguardian.ai_guardian.service.AIGuardianAccessibilityService
+import com.aiguardian.ai_guardian.contentfilter.ContentFilterEngine
+import com.aiguardian.ai_guardian.contentfilter.ContentFilterRepository
 import com.aiguardian.ai_guardian.service.DomainBlockerVpnService
 import android.net.VpnService
 import android.content.Intent
@@ -52,7 +54,7 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
-        platformHandler = PlatformChannelHandler(applicationContext)
+        platformHandler = PlatformChannelHandler(this)
 
         // Initialize persistent storage
         val dbHelper = PolicyDatabaseHelper(applicationContext)
@@ -68,6 +70,17 @@ class MainActivity : FlutterActivity() {
         // Inject into AccessibilityService
         AIGuardianAccessibilityService.policyEngine = policyEngine
         AIGuardianAccessibilityService.usageTracker = usageTracker
+
+        // Initialize ContentFilterEngine with persistent storage
+        val contentFilterRepository = ContentFilterRepository(dbHelper)
+        val contentFilterEngine = ContentFilterEngine()
+        val enabledRules = contentFilterRepository.getEnabledRules()
+        contentFilterEngine.updateRules(enabledRules)
+
+        AIGuardianAccessibilityService.contentFilterEngine = contentFilterEngine
+        AIGuardianAccessibilityService.contentFilterRepository = contentFilterRepository
+
+        Log.i(TAG, "ContentFilterEngine initialized with ${enabledRules.size} rules")
 
         // MethodChannel — request/response from Flutter
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL)

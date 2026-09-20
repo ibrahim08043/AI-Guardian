@@ -3,14 +3,18 @@ package com.aiguardian.ai_guardian.admin
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 
 /**
- * Device Owner manager for AI Guardian.
+ * Device Admin / Device Owner manager for AI Guardian.
  *
- * Handles Device Owner status detection and Chrome managed policy application.
- * Phase L: Testing non-VPN website blocking via Chrome managed policies.
+ * Handles:
+ * - Device Administrator activation/deactivation (normal admin)
+ * - Device Owner status detection (requires provisioning)
+ * - Uninstall protection (requires Device Owner)
+ * - Chrome managed policy application (requires Device Owner)
  */
 class DeviceOwnerManager(private val context: Context) {
 
@@ -25,8 +29,29 @@ class DeviceOwnerManager(private val context: Context) {
     private val adminComponent: ComponentName =
         ComponentName(context, DeviceOwnerReceiver::class.java)
 
+    // ─────────────────────────────────────────────────────────────────────
+    // Status detection
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * Check if AI Guardian is an active Device Administrator.
+     * This is DIFFERENT from Device Owner — admin can be active without Owner.
+     */
+    fun isAdminActive(): Boolean {
+        return try {
+            val active = dpm.isAdminActive(adminComponent)
+            Log.i(TAG, "isAdminActive: $active")
+            active
+        } catch (e: Exception) {
+            Log.w(TAG, "Error checking admin status: ${e.message}")
+            false
+        }
+    }
+
     /**
      * Check if AI Guardian is currently provisioned as Device Owner.
+     * Device Owner is a STRONGER status than admin — it requires provisioning
+     * at device setup time or via ADB.
      */
     fun isDeviceOwner(): Boolean {
         return try {
@@ -39,37 +64,136 @@ class DeviceOwnerManager(private val context: Context) {
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // Device Administrator activation / deactivation
+    // ─────────────────────────────────────────────────────────────────────
+
     /**
-     * Get the current Device Owner package name (if any).
-     * Returns null if no Device Owner is set.
+     * Get an Intent that launches the Android system Device Admin activation screen.
+     * The user must manually confirm activation on that screen.
+     *
+     * Returns null if admin is already active (no action needed).
      */
-    fun getCurrentDeviceOwner(): String? {
+    fun getDeviceAdminActivationIntent(): Intent? {
+        if (isAdminActive()) {
+            Log.i(TAG, "getDeviceAdminActivationIntent: Already active, no intent needed")
+            return null
+        }
+
         return try {
-            // Try using the proper method instead of deprecated property
-            val ownerPackage = if (dpm.isDeviceOwnerApp(PACKAGE_NAME)) {
-                PACKAGE_NAME
-            } else {
-                // If AI Guardian is not DO, we can't easily get the current DO
-                // because getDeviceOwnerComponentName is not publicly available in all APIs
-                null
+            val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+                putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
+                putExtra(
+                    DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                    "AI Guardian needs Device Administrator to enforce app restrictions and protect your digital wellness."
+                )
+                // Required when launching from Application context (not Activity context)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            Log.i(TAG, "Current Device Owner: $ownerPackage")
-            ownerPackage
+            Log.i(TAG, "getDeviceAdminActivationIntent: Created activation intent")
+            intent
         } catch (e: Exception) {
-            Log.w(TAG, "Error getting Device Owner: ${e.message}")
+            Log.e(TAG, "Error creating activation intent: ${e.message}")
             null
         }
     }
 
     /**
-     * Attempt to apply Chrome managed policies.
-     * This is the core test for Phase L.
+     * Get an Intent that launches the Android system Device Admin deactivation screen.
+     * The user must manually confirm deactivation on that screen.
      *
-     * Tries to set ChromeURLBlocklist policy using setApplicationRestrictions.
-     *
-     * @param blockedDomains List of domains to block (e.g., ["youtube.com"])
-     * @return true if policy was applied, false if failed or app is not Device Owner
+     * Returns null if admin is not active (nothing to deactivate).
      */
+    fun getDeviceAdminDeactivationIntent(): Intent? {
+        if (!isAdminActive()) {
+            Log.i(TAG, "getDeviceAdminDeactivationIntent: Not active, no intent needed")
+            return null
+        }
+
+        return try {
+            val intent = Intent("android.app.action.DEVICE_ADMIN_DISABLE_REQUESTED").apply {
+                putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            Log.i(TAG, "getDeviceAdminDeactivationIntent: Created deactivation intent")
+            intent
+        } catch (e: Exception) {
+            Log.e(TAG, "Error creating deactivation intent: ${e.message}")
+            null
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Uninstall protection (requires Device Owner)
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * Block uninstallation of the given package.
+     * Requires Device Owner status. When active, the user cannot uninstall
+     * the app through Settings → Apps or any other normal means.
+     */
+    fun applyUninstallProtection(packageName: String): Boolean {
+        if (!isDeviceOwner()) {
+            Log.w(TAG, "applyUninstallProtection: Not Device Owner, cannot apply")
+            return false
+        }
+
+        return try {
+            dpm.setUninstallBlocked(adminComponent, packageName, true)
+            val blocked = dpm.isUninstallBlocked(adminComponent, packageName)
+            Log.i(TAG, "applyUninstallProtection($packageName): result=$blocked")
+            blocked
+        } catch (e: SecurityException) {
+            Log.e(TAG, "SecurityException applying uninstall protection: ${e.message}")
+            false
+        } catch (e: Exception) {
+            Log.e(TAG, "Error applying uninstall protection: ${e.message}", e)
+            false
+        }
+    }
+
+    /**
+     * Remove uninstall protection for the given package.
+     * Requires Device Owner status.
+     */
+    fun removeUninstallProtection(packageName: String): Boolean {
+        if (!isDeviceOwner()) {
+            Log.w(TAG, "removeUninstallProtection: Not Device Owner, cannot remove")
+            return false
+        }
+
+        return try {
+            dpm.setUninstallBlocked(adminComponent, packageName, false)
+            val blocked = dpm.isUninstallBlocked(adminComponent, packageName)
+            Log.i(TAG, "removeUninstallProtection($packageName): stillBlocked=$blocked")
+            !blocked
+        } catch (e: SecurityException) {
+            Log.e(TAG, "SecurityException removing uninstall protection: ${e.message}")
+            false
+        } catch (e: Exception) {
+            Log.e(TAG, "Error removing uninstall protection: ${e.message}", e)
+            false
+        }
+    }
+
+    /**
+     * Check if uninstall is currently blocked for the given package.
+     */
+    fun isUninstallBlocked(packageName: String): Boolean {
+        return try {
+            val blocked = dpm.isUninstallBlocked(adminComponent, packageName)
+            Log.i(TAG, "isUninstallBlocked($packageName): $blocked")
+            blocked
+        } catch (e: Exception) {
+            Log.w(TAG, "Error checking uninstall block status: ${e.message}")
+            false
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Chrome managed policies (requires Device Owner)
+    // ─────────────────────────────────────────────────────────────────────
+
     fun applyChromeBlocklistPolicy(blockedDomains: List<String>): Boolean {
         if (!isDeviceOwner()) {
             Log.w(TAG, "applyChromeBlocklistPolicy: Not Device Owner, cannot apply")
@@ -78,23 +202,14 @@ class DeviceOwnerManager(private val context: Context) {
 
         return try {
             val chromePackage = "com.android.chrome"
-
-            // Create Bundle with Chrome managed policies
-            // Attempt standard Chrome policy keys
             val restrictions = Bundle()
-
-            // Try URLBlocklist-style key (may not work on Android)
             restrictions.putStringArray("URLBlocklist", blockedDomains.toTypedArray())
-
-            // Also try alternative policy keys that Chrome might recognize
             restrictions.putStringArray("BlockedUrls", blockedDomains.toTypedArray())
 
             Log.i(TAG, "Applying Chrome policy with ${blockedDomains.size} blocked domains")
             blockedDomains.forEach { Log.d(TAG, "  - $it") }
 
-            // Apply via DevicePolicyManager
             dpm.setApplicationRestrictions(adminComponent, chromePackage, restrictions)
-
             Log.i(TAG, "Chrome policy applied successfully")
             true
         } catch (e: SecurityException) {
@@ -106,9 +221,6 @@ class DeviceOwnerManager(private val context: Context) {
         }
     }
 
-    /**
-     * Get current Chrome managed policies (restrictions).
-     */
     fun getChromePolicy(): Bundle? {
         if (!isDeviceOwner()) {
             Log.w(TAG, "getChromePolicy: Not Device Owner")
@@ -126,9 +238,6 @@ class DeviceOwnerManager(private val context: Context) {
         }
     }
 
-    /**
-     * Clear Chrome managed policies.
-     */
     fun clearChromePolicy(): Boolean {
         if (!isDeviceOwner()) {
             Log.w(TAG, "clearChromePolicy: Not Device Owner")
@@ -146,15 +255,23 @@ class DeviceOwnerManager(private val context: Context) {
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // Status summary
+    // ─────────────────────────────────────────────────────────────────────
+
     /**
-     * Get Device Owner status summary for UI display.
+     * Get full admin/owner status summary for UI display.
+     * All values come from actual DevicePolicyManager state.
      */
     fun getStatus(): Map<String, Any> {
+        val admin = isAdminActive()
+        val owner = isDeviceOwner()
         return mapOf(
-            "isDeviceOwner" to isDeviceOwner(),
-            "currentDeviceOwner" to (getCurrentDeviceOwner() ?: "none"),
+            "isAdminActive" to admin,
+            "isDeviceOwner" to owner,
+            "isUninstallBlocked" to if (owner) isUninstallBlocked(PACKAGE_NAME) else false,
             "adminComponent" to adminComponent.flattenToString(),
-            "canManageChromePolicy" to isDeviceOwner()
+            "packageName" to PACKAGE_NAME,
         )
     }
 }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'app/router.dart';
 import 'core/theme/app_theme.dart';
+import 'features/auth/password_service.dart';
 
 /// Entry point for AI Guardian application.
 /// This app uses a clean feature-first architecture with:
@@ -11,6 +12,11 @@ import 'core/theme/app_theme.dart';
 /// - Material 3 design system
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Load the app password from assets before rendering any UI.
+  // This ensures the auth gate can check synchronously.
+  await PasswordService.loadPassword();
+
   runApp(const AiGuardianApp());
 }
 

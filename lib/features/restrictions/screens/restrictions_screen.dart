@@ -4,11 +4,17 @@ import 'package:flutter/material.dart';
 import '../../../platform/android_platform_service.dart';
 import '../../../platform/models/installed_app.dart';
 import '../../../platform/models/policy_model.dart';
+import '../../auth/password_service.dart';
+import '../../auth/password_screen.dart';
 import 'restriction_settings_screen.dart';
 import 'domain_restrictions_screen.dart';
+import 'content_filter_screen.dart';
 
 /// Restrictions screen - manage app blocking rules and domain restrictions.
 /// Uses tabs to switch between app restrictions and website/domain restrictions.
+///
+/// Authentication is embedded directly in this screen to ensure the password
+/// gate is enforced regardless of routing behavior.
 class RestrictionsScreen extends StatefulWidget {
   const RestrictionsScreen({super.key});
 
@@ -20,6 +26,10 @@ class _RestrictionsScreenState extends State<RestrictionsScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
 
+  // Authentication state — starts as NOT authenticated.
+  // The password screen MUST appear before any restriction content is accessible.
+  bool _isAuthenticated = false;
+
   List<InstalledApp> installedApps = [];
   bool isLoading = true;
   String? errorMessage;
@@ -30,8 +40,9 @@ class _RestrictionsScreenState extends State<RestrictionsScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
-    _loadInstalledApps();
+    _tabController = TabController(length: 3, vsync: this);
+    // _isAuthenticated starts as false — password screen will always appear.
+    // It becomes true ONLY after correct password entry via onVerified callback.
   }
 
   @override
@@ -72,22 +83,23 @@ class _RestrictionsScreenState extends State<RestrictionsScreen>
 
       // Get installed apps from Android
       final rawApps = await AndroidPlatformService.getInstalledApps();
-      debugPrint('[RestrictionsScreen] Received ${rawApps.length} raw apps from platform service');
+      debugPrint(
+          '[RestrictionsScreen] Received ${rawApps.length} raw apps from platform service');
 
       if (rawApps.isEmpty) {
         // Fallback: Show error message for debugging
         setState(() {
-          errorMessage = 'No apps returned from native layer. Check logcat for AIGuardianPlatform logs.';
+          errorMessage =
+              'No apps returned from native layer. Check logcat for AIGuardianPlatform logs.';
           isLoading = false;
         });
         return;
       }
 
       // Convert to InstalledApp models
-      final apps = rawApps
-          .map((map) => InstalledApp.fromMap(map))
-          .toList();
-      debugPrint('[RestrictionsScreen] Converted to ${apps.length} InstalledApp models');
+      final apps = rawApps.map((map) => InstalledApp.fromMap(map)).toList();
+      debugPrint(
+          '[RestrictionsScreen] Converted to ${apps.length} InstalledApp models');
 
       // Load all policies for status display
       final policies = await AndroidPlatformService.getPolicies();
@@ -103,7 +115,8 @@ class _RestrictionsScreenState extends State<RestrictionsScreen>
         }
       }
 
-      debugPrint('[RestrictionsScreen] About to set state with ${apps.length} apps');
+      debugPrint(
+          '[RestrictionsScreen] About to set state with ${apps.length} apps');
       if (mounted) {
         setState(() {
           installedApps = apps;
@@ -142,6 +155,20 @@ class _RestrictionsScreenState extends State<RestrictionsScreen>
 
   @override
   Widget build(BuildContext context) {
+    // ── Authentication gate ──────────────────────────────────────────────
+    // Password screen MUST appear before any restriction content is shown.
+    if (!_isAuthenticated) {
+      return PasswordScreen(
+        onVerified: () {
+          setState(() {
+            _isAuthenticated = true;
+          });
+          _loadInstalledApps();
+        },
+      );
+    }
+    // ── End authentication gate ──────────────────────────────────────────
+
     if (isLoading) {
       return Scaffold(
         appBar: AppBar(title: const Text('Restrictions')),
@@ -189,6 +216,7 @@ class _RestrictionsScreenState extends State<RestrictionsScreen>
           tabs: const [
             Tab(text: 'Apps'),
             Tab(text: 'Websites'),
+            Tab(text: 'Words'),
           ],
         ),
       ),
@@ -212,10 +240,10 @@ class _RestrictionsScreenState extends State<RestrictionsScreen>
                   ),
                 ),
                 ...restrictedApps.map((app) => _RestrictedAppTile(
-                  app: app,
-                  policy: _policyCache[app.packageName],
-                  onTap: () => _openSettings(app),
-                )),
+                      app: app,
+                      policy: _policyCache[app.packageName],
+                      onTap: () => _openSettings(app),
+                    )),
                 const Divider(height: 1),
               ],
 
@@ -227,19 +255,24 @@ class _RestrictionsScreenState extends State<RestrictionsScreen>
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.bold,
-                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withValues(alpha: 0.6),
                   ),
                 ),
               ),
               ...unrestrictedApps.map((app) => _RestrictedAppTile(
-                app: app,
-                policy: _policyCache[app.packageName],
-                onTap: () => _openSettings(app),
-              )),
+                    app: app,
+                    policy: _policyCache[app.packageName],
+                    onTap: () => _openSettings(app),
+                  )),
             ],
           ),
           // Websites tab
           const DomainRestrictionsScreen(),
+          // Words tab — content filtering
+          const ContentFilterScreen(),
         ],
       ),
     );

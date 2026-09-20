@@ -2,19 +2,18 @@
 <!--
     AccessibilityService configuration for AI Guardian.
 
-    This is a minimal foundation configuration. It allows Android to recognize
-    the service and lets the user enable/disable it from Accessibility Settings.
+    Event types:
+    - typeWindowStateChanged: foreground app detection + policy evaluation
+    - typeViewTextChanged: text content filtering (user input)
+    - typeWindowContentChanged: text content filtering (content updates)
 
-    In future phases, event types and capabilities will be refined as needed
-    for foreground app detection and policy enforcement.
-
-    Privacy: canRetrieveWindowContent is OFF. The service will NOT read
-    screen content, text, passwords, or sensitive data.
+    canRetrieveWindowContent is ON to allow node-tree text extraction
+    when event.text is empty.
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/accessibility_service_description"
-    android:accessibilityEventTypes="typeAllMask"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeViewTextChanged|typeWindowContentChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:canRetrieveWindowContent="false"
+    android:canRetrieveWindowContent="true"
     android:notificationTimeout="100"
     android:settingsActivity="com.aiguardian.ai_guardian.MainActivity" />
