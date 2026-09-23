@@ -369,6 +369,139 @@ class AndroidPlatformService {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Multiple schedule CRUD
+  // ---------------------------------------------------------------------------
+
+  /// Get all schedules for a package.
+  static Future<List<AppScheduleModel>> getAllSchedules(String packageName) async {
+    try {
+      final result = await PlatformChannels.methodChannel
+          .invokeListMethod<dynamic>(
+        'getAllSchedules',
+        {'packageName': packageName},
+      );
+      if (result == null) return [];
+      final schedules = <AppScheduleModel>[];
+      for (final item in result) {
+        if (item is Map) {
+          final model = AppScheduleModel.fromMap(item as Map<dynamic, dynamic>);
+          if (model != null) schedules.add(model);
+        }
+      }
+      return schedules;
+    } on PlatformException catch (e) {
+      _logError('getAllSchedules', e);
+      return [];
+    } on MissingPluginException catch (e) {
+      _logError('getAllSchedules', e);
+      return [];
+    }
+  }
+
+  /// Add a new schedule for a package.
+  /// Returns the new schedule ID, or -1 on failure.
+  static Future<int> addSchedule({
+    required String packageName,
+    required int startMinutes,
+    required int endMinutes,
+    required bool enabled,
+  }) async {
+    try {
+      final result = await PlatformChannels.methodChannel.invokeMapMethod<
+          String,
+          dynamic>(
+        'addSchedule',
+        {
+          'packageName': packageName,
+          'startMinutes': startMinutes,
+          'endMinutes': endMinutes,
+          'enabled': enabled,
+        },
+      );
+      final rawId = result?['id'];
+      if (rawId is int) return rawId;
+      if (rawId is num) return rawId.toInt();
+      return result?['success'] == true ? 1 : -1;
+    } on PlatformException catch (e) {
+      _logError('addSchedule', e);
+      return -1;
+    } on MissingPluginException catch (e) {
+      _logError('addSchedule', e);
+      return -1;
+    }
+  }
+
+  /// Update an existing schedule.
+  static Future<bool> updateSchedule({
+    required int id,
+    required int startMinutes,
+    required int endMinutes,
+    required bool enabled,
+  }) async {
+    try {
+      final result = await PlatformChannels.methodChannel.invokeMapMethod<
+          String,
+          dynamic>(
+        'updateSchedule',
+        {
+          'id': id,
+          'startMinutes': startMinutes,
+          'endMinutes': endMinutes,
+          'enabled': enabled,
+        },
+      );
+      return result?['success'] == true;
+    } on PlatformException catch (e) {
+      _logError('updateSchedule', e);
+      return false;
+    } on MissingPluginException catch (e) {
+      _logError('updateSchedule', e);
+      return false;
+    }
+  }
+
+  /// Delete a schedule by ID.
+  static Future<bool> deleteSchedule(int id) async {
+    try {
+      final result = await PlatformChannels.methodChannel.invokeMapMethod<
+          String,
+          dynamic>(
+        'deleteSchedule',
+        {'id': id},
+      );
+      return result?['success'] == true;
+    } on PlatformException catch (e) {
+      _logError('deleteSchedule', e);
+      return false;
+    } on MissingPluginException catch (e) {
+      _logError('deleteSchedule', e);
+      return false;
+    }
+  }
+
+  /// Toggle the enabled state of a schedule.
+  static Future<bool> toggleScheduleEnabled(int id, bool enabled) async {
+    try {
+      final result = await PlatformChannels.methodChannel.invokeMapMethod<
+          String,
+          dynamic>(
+        'toggleScheduleEnabled',
+        {
+          'id': id,
+          'enabled': enabled,
+        },
+      );
+      return result?['success'] == true;
+    } on PlatformException catch (e) {
+      _logError('toggleScheduleEnabled', e);
+      return false;
+    } on MissingPluginException catch (e) {
+      _logError('toggleScheduleEnabled', e);
+      return false;
+    }
+  }
+
   /// Save a daily limit configuration for a policy.
   /// Returns true if successful, false otherwise.
   static Future<bool> saveDailyLimit({
@@ -891,6 +1024,26 @@ class AndroidPlatformService {
     } on MissingPluginException catch (e) {
       _logError('isMasterContentFilterEnabled', e);
       return true;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase 3B: Website blocking (AccessibilityService-based)
+  // ---------------------------------------------------------------------------
+
+  /// Notify the native AccessibilityService to reload its blocked domains cache.
+  /// Called after any domain is added, deleted, or toggled.
+  static Future<bool> refreshBlockedDomains() async {
+    try {
+      final result = await PlatformChannels.methodChannel
+          .invokeMapMethod<String, dynamic>('refreshBlockedDomains');
+      return result?['success'] == true;
+    } on PlatformException catch (e) {
+      _logError('refreshBlockedDomains', e);
+      return false;
+    } on MissingPluginException catch (e) {
+      _logError('refreshBlockedDomains', e);
+      return false;
     }
   }
 

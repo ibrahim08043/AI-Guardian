@@ -26,6 +26,10 @@ class ContentFilterRepository(private val dbHelper: PolicyDatabaseHelper) {
         private const val TAG = "AIGuardianFilterRepo"
     }
 
+    init {
+        Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_INIT dbHelper=${dbHelper.hashCode()} dbName=${dbHelper.databaseName}")
+    }
+
     // -------------------------------------------------------------------------
     // Read operations
     // -------------------------------------------------------------------------
@@ -36,9 +40,10 @@ class ContentFilterRepository(private val dbHelper: PolicyDatabaseHelper) {
      */
     fun getAllRules(): List<ContentFilterRule> {
         val db = dbHelper.getReadableDB() ?: run {
-            Log.e(TAG, "Cannot read from database")
+            Log.e(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_GETALL_NO_DB")
             return emptyList()
         }
+        Log.d(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_GETALL dbPath=${db.path}")
 
         return try {
             val cursor = db.query(
@@ -57,10 +62,13 @@ class ContentFilterRepository(private val dbHelper: PolicyDatabaseHelper) {
                 }
             }
 
-            Log.d(TAG, "Loaded ${rules.size} content filter rules")
+            Log.d(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_GETALL count=${rules.size}")
+            for (rule in rules) {
+                Log.d(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_GETALL id=${rule.id} phrase=${rule.phrase} enabled=${rule.enabled} matchMode=${rule.matchMode}")
+            }
             rules
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to read content filter rules: ${e.message}")
+            Log.e(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_GETALL_FAILED error=${e.message}")
             emptyList()
         }
     }
@@ -71,7 +79,7 @@ class ContentFilterRepository(private val dbHelper: PolicyDatabaseHelper) {
      */
     fun getEnabledRules(): List<ContentFilterRule> {
         val db = dbHelper.getReadableDB() ?: run {
-            Log.e(TAG, "Cannot read from database")
+            Log.e(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_GET_ENABLED_NO_DB")
             return emptyList()
         }
 
@@ -94,10 +102,10 @@ class ContentFilterRepository(private val dbHelper: PolicyDatabaseHelper) {
                 }
             }
 
-            Log.d(TAG, "Loaded ${rules.size} enabled content filter rules")
+            Log.d(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_GET_ENABLED count=${rules.size}")
             rules
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to read enabled content filter rules: ${e.message}")
+            Log.e(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_GET_ENABLED_FAILED error=${e.message}")
             emptyList()
         }
     }
@@ -107,8 +115,9 @@ class ContentFilterRepository(private val dbHelper: PolicyDatabaseHelper) {
      * Returns null if not found or if database is unavailable.
      */
     fun getRule(id: Long): ContentFilterRule? {
+        Log.d(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_GET_RULE id=$id")
         val db = dbHelper.getReadableDB() ?: run {
-            Log.e(TAG, "Cannot read from database")
+            Log.e(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_GET_RULE_NO_DB")
             return null
         }
 
@@ -122,10 +131,17 @@ class ContentFilterRepository(private val dbHelper: PolicyDatabaseHelper) {
             )
 
             cursor.use {
-                if (it.moveToFirst()) readRuleFromCursor(it) else null
+                if (it.moveToFirst()) {
+                    val rule = readRuleFromCursor(it)
+                    Log.d(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_GET_RULE_FOUND id=$id phrase=${rule?.phrase} enabled=${rule?.enabled}")
+                    rule
+                } else {
+                    Log.d(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_GET_RULE_NOT_FOUND id=$id")
+                    null
+                }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to read content filter rule $id: ${e.message}")
+            Log.e(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_GET_RULE_EXCEPTION id=$id error=${e.message}")
             null
         }
     }
@@ -135,18 +151,22 @@ class ContentFilterRepository(private val dbHelper: PolicyDatabaseHelper) {
      */
     private fun readRuleFromCursor(cursor: android.database.Cursor): ContentFilterRule? {
         return try {
+            val rawId = cursor.getLong(cursor.getColumnIndexOrThrow(COLUMN_FILTER_ID))
+            val rawPhrase = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_FILTER_PHRASE))
+            val rawEnabledInt = cursor.getInt(cursor.getColumnIndexOrThrow(COLUMN_FILTER_ENABLED))
+            val rawEnabledBool = rawEnabledInt != 0
+            val rawMatchMode = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_FILTER_MATCH_MODE))
+            Log.d(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_CURSOR rawId=$rawId rawPhrase=$rawPhrase rawEnabledInt=$rawEnabledInt rawEnabledBool=$rawEnabledBool rawMatchMode=$rawMatchMode")
             ContentFilterRule(
-                id = cursor.getLong(cursor.getColumnIndexOrThrow(COLUMN_FILTER_ID)),
-                phrase = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_FILTER_PHRASE)),
-                enabled = cursor.getInt(cursor.getColumnIndexOrThrow(COLUMN_FILTER_ENABLED)) != 0,
-                matchMode = ContentFilterMatchMode.fromString(
-                    cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_FILTER_MATCH_MODE))
-                ),
+                id = rawId,
+                phrase = rawPhrase,
+                enabled = rawEnabledBool,
+                matchMode = ContentFilterMatchMode.fromString(rawMatchMode),
                 createdAt = cursor.getLong(cursor.getColumnIndexOrThrow(COLUMN_FILTER_CREATED_AT)),
                 updatedAt = cursor.getLong(cursor.getColumnIndexOrThrow(COLUMN_FILTER_UPDATED_AT)),
             )
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to read content filter rule from cursor: ${e.message}")
+            Log.w(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_CURSOR_FAILED error=${e.message}")
             null
         }
     }
@@ -160,13 +180,14 @@ class ContentFilterRepository(private val dbHelper: PolicyDatabaseHelper) {
      * Returns the inserted row ID, or -1 on failure.
      */
     fun saveRule(rule: ContentFilterRule): Long {
+        Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_SAVE phrase=${rule.phrase} enabled=${rule.enabled} matchMode=${rule.matchMode}")
         val normalized = ContentFilterRule.normalizePhrase(rule.phrase) ?: run {
-            Log.w(TAG, "Cannot save rule with blank phrase")
+            Log.w(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_SAVE_BLANK_PHRASE")
             return -1
         }
 
         val db = dbHelper.getWritableDB() ?: run {
-            Log.e(TAG, "Cannot write to database")
+            Log.e(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_SAVE_NO_DB")
             return -1
         }
 
@@ -181,14 +202,25 @@ class ContentFilterRepository(private val dbHelper: PolicyDatabaseHelper) {
             }
 
             val result = db.insert(TABLE_CONTENT_FILTER_RULES, null, values)
+            Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_SAVE_RESULT phrase=$normalized id=$result")
             if (result > 0) {
-                Log.i(TAG, "Saved content filter rule: '$normalized' (${rule.matchMode})")
-            } else {
-                Log.e(TAG, "Failed to save content filter rule")
+                // Verify by reading back
+                val verifyCursor = db.query(
+                    TABLE_CONTENT_FILTER_RULES,
+                    arrayOf(COLUMN_FILTER_ID, COLUMN_FILTER_PHRASE, COLUMN_FILTER_ENABLED),
+                    "$COLUMN_FILTER_ID = ?",
+                    arrayOf(result.toString()),
+                    null, null, null,
+                )
+                verifyCursor.use {
+                    if (it.moveToFirst()) {
+                        Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_SAVE_VERIFY id=${it.getLong(0)} phrase=${it.getString(1)} enabled=${it.getInt(2)}")
+                    }
+                }
             }
             result
         } catch (e: Exception) {
-            Log.e(TAG, "Exception while saving content filter rule: ${e.message}")
+            Log.e(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_SAVE_EXCEPTION phrase=$normalized error=${e.message}")
             -1
         }
     }
@@ -246,32 +278,50 @@ class ContentFilterRepository(private val dbHelper: PolicyDatabaseHelper) {
      * Returns true if successful, false otherwise.
      */
     fun deleteRule(id: Long): Boolean {
+        Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_DELETE id=$id idType=${id::class.java.simpleName}")
         if (id <= 0) {
-            Log.w(TAG, "Cannot delete rule with invalid ID: $id")
+            Log.w(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_DELETE_INVALID_ID id=$id")
             return false
         }
 
         val db = dbHelper.getWritableDB() ?: run {
-            Log.e(TAG, "Cannot write to database")
+            Log.e(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_DELETE_NO_DB")
             return false
         }
 
         return try {
+            // First check what exists
+            val cursor = db.query(
+                TABLE_CONTENT_FILTER_RULES,
+                arrayOf(COLUMN_FILTER_ID, COLUMN_FILTER_PHRASE, COLUMN_FILTER_ENABLED),
+                "$COLUMN_FILTER_ID = ?",
+                arrayOf(id.toString()),
+                null, null, null,
+            )
+            val existsBefore = cursor.use {
+                if (it.moveToFirst()) {
+                    Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_DELETE_BEFORE id=${it.getLong(0)} phrase=${it.getString(1)} enabled=${it.getInt(2)}")
+                    true
+                } else {
+                    Log.w(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_DELETE_BEFORE id=$id NOT_FOUND in DB")
+                    false
+                }
+            }
+
             val result = db.delete(
                 TABLE_CONTENT_FILTER_RULES,
                 "$COLUMN_FILTER_ID = ?",
                 arrayOf(id.toString()),
             )
 
+            Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_DELETE_ROWS id=$id rowsAffected=$result")
             val success = result > 0
-            if (success) {
-                Log.i(TAG, "Deleted content filter rule $id")
-            } else {
-                Log.w(TAG, "No content filter rule found to delete: $id")
+            if (!success) {
+                Log.e(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_DELETE_FAILED id=$id — rowsAffected=0")
             }
             success
         } catch (e: Exception) {
-            Log.e(TAG, "Exception while deleting content filter rule: ${e.message}")
+            Log.e(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_DELETE_EXCEPTION id=$id error=${e.message}")
             false
         }
     }
@@ -281,13 +331,14 @@ class ContentFilterRepository(private val dbHelper: PolicyDatabaseHelper) {
      * Returns true if successful, false otherwise.
      */
     fun setRuleEnabled(id: Long, enabled: Boolean): Boolean {
+        Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_TOGGLE id=$id enabled=$enabled idType=${id::class.java.simpleName}")
         if (id <= 0) {
-            Log.w(TAG, "Cannot update rule with invalid ID: $id")
+            Log.w(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_TOGGLE_INVALID_ID id=$id")
             return false
         }
 
         val db = dbHelper.getWritableDB() ?: run {
-            Log.e(TAG, "Cannot write to database")
+            Log.e(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_TOGGLE_NO_DB")
             return false
         }
 
@@ -297,6 +348,8 @@ class ContentFilterRepository(private val dbHelper: PolicyDatabaseHelper) {
                 put(COLUMN_FILTER_UPDATED_AT, System.currentTimeMillis())
             }
 
+            Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_TOGGLE_SQL UPDATE $TABLE_CONTENT_FILTER_RULES SET $COLUMN_FILTER_ENABLED=${if (enabled) 1 else 0} WHERE $COLUMN_FILTER_ID=? (bind=${id.toString()})")
+
             val result = db.update(
                 TABLE_CONTENT_FILTER_RULES,
                 values,
@@ -304,13 +357,14 @@ class ContentFilterRepository(private val dbHelper: PolicyDatabaseHelper) {
                 arrayOf(id.toString()),
             )
 
+            Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_TOGGLE_ROWS id=$id rowsAffected=$result")
             val success = result > 0
-            if (success) {
-                Log.i(TAG, "Set content filter rule $id enabled=$enabled")
+            if (!success) {
+                Log.e(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_TOGGLE_NO_ROWS id=$id — rule not found in DB!")
             }
             success
         } catch (e: Exception) {
-            Log.e(TAG, "Exception while updating content filter rule enabled: ${e.message}")
+            Log.e(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG REPO_TOGGLE_EXCEPTION id=$id error=${e.message}")
             false
         }
     }

@@ -292,8 +292,9 @@ class _RestrictedAppTile extends StatelessWidget {
 
   String _getStatusText() {
     if (!app.isBlocked) return 'Allowed';
-    if (policy?.schedule.enabled == true) {
-      return 'Blocked · ${policy?.schedule.displayString() ?? ''}';
+    final activeSchedules = policy?.schedules.where((s) => s.enabled).toList() ?? [];
+    if (activeSchedules.isNotEmpty) {
+      return 'Blocked · ${activeSchedules.length} schedule${activeSchedules.length == 1 ? '' : 's'}';
     }
     if (policy?.dailyLimit.enabled == true) {
       return 'Blocked · ${policy?.dailyLimit.displayString() ?? ''}';

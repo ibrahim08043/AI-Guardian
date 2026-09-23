@@ -64,6 +64,30 @@ class PolicyEngine(private val repository: PolicyRepository? = null) {
     private val inMemoryPolicies = mutableMapOf<String, Policy>()
 
     /**
+     * In-memory cache of policies keyed by package name.
+     * Avoids hitting SQLite on every evaluate() call during frequent app switching.
+     * Kept in sync by setPolicy(), removePolicy(), setPolicyEnabled(), and refreshCache().
+     */
+    @Volatile
+    private var policyCache: Map<String, Policy> = emptyMap()
+
+    /**
+     * Reload the entire policy cache from the repository.
+     * Call this on startup or when a bulk policy change occurs.
+     */
+    fun refreshCache() {
+        if (repository != null) {
+            try {
+                val policies = repository.getAllPolicies()
+                policyCache = policies.associateBy { it.packageName }
+                Log.i(TAG, "Policy cache refreshed: ${policyCache.size} policies")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to refresh policy cache: ${e.message}")
+            }
+        }
+    }
+
+    /**
      * Evaluate a package name against all active policies.
      *
      * Rules (in order):
@@ -81,21 +105,20 @@ class PolicyEngine(private val repository: PolicyRepository? = null) {
     fun evaluate(packageName: String?): PolicyResult {
         // Rule 1: Null/blank → ALLOW (fail-safe)
         if (packageName.isNullOrBlank()) {
-            val result = PolicyResult.allow(packageName.orEmpty(), "empty input")
-            Log.d(TAG, "package=${result.packageName} action=${result.action} (${result.reason})")
-            return result
+            return PolicyResult.allow(packageName.orEmpty(), "empty input")
         }
 
         // Rule 2: Self-protection — AI Guardian always allowed
         if (packageName == OWN_PACKAGE) {
-            val result = PolicyResult.allow(packageName, "self-protection")
-            Log.d(TAG, "package=$packageName action=${result.action} (${result.reason})")
-            return result
+            return PolicyResult.allow(packageName, "self-protection")
         }
 
-        // Rule 3: Look up policy (repository first, then in-memory fallback)
+        // Rule 3: Look up policy (cache first, then repository, then in-memory fallback)
         val policy = try {
-            if (repository != null) {
+            val cached = policyCache[packageName]
+            if (cached != null) {
+                cached
+            } else if (repository != null) {
                 repository.getPolicy(packageName)
             } else {
                 inMemoryPolicies[packageName]
@@ -107,25 +130,19 @@ class PolicyEngine(private val repository: PolicyRepository? = null) {
 
         // Rule 4: No policy found → ALLOW
         if (policy == null) {
-            val result = PolicyResult.allow(packageName, "no policy")
-            Log.d(TAG, "package=$packageName action=${result.action} (${result.reason})")
-            return result
+            return PolicyResult.allow(packageName, "no policy")
         }
 
         // Rule 5: Policy disabled → ALLOW
         if (!policy.enabled) {
-            val result = PolicyResult.allow(packageName, "policy disabled")
-            Log.d(TAG, "package=$packageName action=${result.action} (${result.reason})")
-            return result
+            return PolicyResult.allow(packageName, "policy disabled")
         }
 
-        // Rule 6: Schedule check — if enabled and within window → BLOCK
-        if (policy.scheduleEnabled && policy.schedule != null) {
+        // Rule 6: Schedule check — if any enabled schedule is active → BLOCK
+        if (policy.schedules.isNotEmpty()) {
             try {
-                if (ScheduleEvaluator.isWithinSchedule(policy.schedule)) {
-                    val result = PolicyResult.block(packageName, "schedule active")
-                    Log.d(TAG, "package=$packageName action=${result.action} (${result.reason})")
-                    return result
+                if (ScheduleEvaluator.anyActiveSchedule(policy.schedules)) {
+                    return PolicyResult.block(packageName, "schedule active")
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Schedule evaluation failed for $packageName: ${e.message}, ignoring schedule")
@@ -139,9 +156,7 @@ class PolicyEngine(private val repository: PolicyRepository? = null) {
                 val tracker = usageTracker
                 if (tracker != null) {
                     if (tracker.hasExceededLimit(packageName, policy.dailyLimit.limitMinutes)) {
-                        val result = PolicyResult.block(packageName, "daily limit exceeded")
-                        Log.d(TAG, "package=$packageName action=${result.action} (${result.reason})")
-                        return result
+                        return PolicyResult.block(packageName, "daily limit exceeded")
                     }
                 } else {
                     Log.w(TAG, "UsageTracker unavailable, skipping daily limit check for $packageName")
@@ -153,14 +168,12 @@ class PolicyEngine(private val repository: PolicyRepository? = null) {
         }
 
         // Rule 9: Return policy's base action
-        val result = PolicyResult(
+        return PolicyResult(
             packageName = packageName,
             action = policy.action,
             matched = true,
             reason = "policy match",
         )
-        Log.d(TAG, "package=$packageName action=${result.action} (${result.reason})")
-        return result
     }
 
     /**
@@ -174,7 +187,8 @@ class PolicyEngine(private val repository: PolicyRepository? = null) {
             } else {
                 inMemoryPolicies[policy.packageName] = policy
             }
-            Log.d(TAG, "Policy saved: ${policy.packageName} → ${policy.action}")
+            // Update cache
+            policyCache = policyCache + (policy.packageName to policy)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to save policy: ${e.message}")
         }
@@ -191,7 +205,8 @@ class PolicyEngine(private val repository: PolicyRepository? = null) {
             } else {
                 inMemoryPolicies.remove(packageName)
             }
-            Log.d(TAG, "Policy deleted: $packageName")
+            // Remove from cache
+            policyCache = policyCache - packageName
         } catch (e: Exception) {
             Log.e(TAG, "Failed to delete policy: ${e.message}")
         }
@@ -211,7 +226,11 @@ class PolicyEngine(private val repository: PolicyRepository? = null) {
                     inMemoryPolicies[packageName] = policy.copy(enabled = enabled)
                 }
             }
-            Log.d(TAG, "Policy enabled=$enabled: $packageName")
+            // Update cache
+            val cached = policyCache[packageName]
+            if (cached != null) {
+                policyCache = policyCache + (packageName to cached.copy(enabled = enabled))
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to update policy: ${e.message}")
         }

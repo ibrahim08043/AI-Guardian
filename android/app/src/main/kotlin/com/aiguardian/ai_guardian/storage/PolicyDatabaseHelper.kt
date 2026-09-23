@@ -37,7 +37,7 @@ class PolicyDatabaseHelper(context: Context) : SQLiteOpenHelper(
     companion object {
         private const val TAG = "AIGuardianDB"
         private const val DATABASE_NAME = "ai_guardian.db"
-        private const val DATABASE_VERSION = 4
+        private const val DATABASE_VERSION = 5
 
         // Table name
         const val TABLE_POLICIES = "policies"
@@ -83,6 +83,16 @@ class PolicyDatabaseHelper(context: Context) : SQLiteOpenHelper(
         const val COLUMN_FILTER_MATCH_MODE = "match_mode"
         const val COLUMN_FILTER_CREATED_AT = "created_at"
         const val COLUMN_FILTER_UPDATED_AT = "updated_at"
+
+        // App schedules table (Phase 3C: Multiple schedule windows)
+        const val TABLE_APP_SCHEDULES = "app_schedules"
+        const val COLUMN_SCHED_ID = "id"
+        const val COLUMN_SCHED_PACKAGE = "package_name"
+        const val COLUMN_SCHED_START = "start_minutes"
+        const val COLUMN_SCHED_END = "end_minutes"
+        const val COLUMN_SCHED_ENABLED = "enabled"
+        const val COLUMN_SCHED_CREATED_AT = "created_at"
+        const val COLUMN_SCHED_UPDATED_AT = "updated_at"
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -90,6 +100,7 @@ class PolicyDatabaseHelper(context: Context) : SQLiteOpenHelper(
         createUsageSessionsTable(db)
         createDomainsTable(db)
         createContentFilterRulesTable(db)
+        createAppSchedulesTable(db)
         Log.i(TAG, "Database tables created successfully (v$DATABASE_VERSION)")
     }
 
@@ -104,6 +115,9 @@ class PolicyDatabaseHelper(context: Context) : SQLiteOpenHelper(
         }
         if (oldVersion < 4) {
             migrateV3ToV4(db)
+        }
+        if (oldVersion < 5) {
+            migrateV4ToV5(db)
         }
     }
 
@@ -226,6 +240,68 @@ class PolicyDatabaseHelper(context: Context) : SQLiteOpenHelper(
             )
         """.trimIndent()
         db.execSQL(sql)
+    }
+
+    /**
+     * Migration from v4 to v5: Add app_schedules table for multiple schedule windows.
+     * Migrates existing single schedules from policies table to new table.
+     */
+    private fun migrateV4ToV5(db: SQLiteDatabase) {
+        try {
+            createAppSchedulesTable(db)
+
+            // Migrate existing single schedules from policies table
+            val cursor = db.rawQuery(
+                "SELECT $COLUMN_PACKAGE_NAME, $COLUMN_SCHEDULE_START, $COLUMN_SCHEDULE_END " +
+                "FROM $TABLE_POLICIES " +
+                "WHERE $COLUMN_SCHEDULE_ENABLED = 1 " +
+                "AND $COLUMN_SCHEDULE_START IS NOT NULL " +
+                "AND $COLUMN_SCHEDULE_END IS NOT NULL",
+                null,
+            )
+
+            val now = System.currentTimeMillis()
+            cursor.use {
+                while (it.moveToNext()) {
+                    val packageName = it.getString(0)
+                    val start = it.getInt(1)
+                    val end = it.getInt(2)
+                    val values = android.content.ContentValues().apply {
+                        put(COLUMN_SCHED_PACKAGE, packageName)
+                        put(COLUMN_SCHED_START, start)
+                        put(COLUMN_SCHED_END, end)
+                        put(COLUMN_SCHED_ENABLED, 1)
+                        put(COLUMN_SCHED_CREATED_AT, now)
+                        put(COLUMN_SCHED_UPDATED_AT, now)
+                    }
+                    db.insert(TABLE_APP_SCHEDULES, null, values)
+                    Log.i(TAG, "Migrated schedule for $packageName: $start→$end")
+                }
+            }
+
+            Log.i(TAG, "Migration v4→v5 completed successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "Migration v4→v5 failed: ${e.message}")
+            throw e
+        }
+    }
+
+    private fun createAppSchedulesTable(db: SQLiteDatabase) {
+        val sql = """
+            CREATE TABLE $TABLE_APP_SCHEDULES (
+                $COLUMN_SCHED_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                $COLUMN_SCHED_PACKAGE TEXT NOT NULL,
+                $COLUMN_SCHED_START INTEGER NOT NULL,
+                $COLUMN_SCHED_END INTEGER NOT NULL,
+                $COLUMN_SCHED_ENABLED INTEGER NOT NULL DEFAULT 1,
+                $COLUMN_SCHED_CREATED_AT INTEGER NOT NULL,
+                $COLUMN_SCHED_UPDATED_AT INTEGER NOT NULL
+            )
+        """.trimIndent()
+        db.execSQL(sql)
+        db.execSQL(
+            "CREATE INDEX idx_schedules_package ON $TABLE_APP_SCHEDULES($COLUMN_SCHED_PACKAGE)"
+        )
     }
 
     /**

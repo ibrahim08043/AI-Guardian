@@ -51,6 +51,18 @@
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode" />
 
         <!--
+            UninstallGuardActivity — Phase 2 uninstall protection.
+            Displays a password gate when an uninstall attempt on AI Guardian is detected.
+            This Activity is part of AI Guardian's package and is never blocked itself.
+            Reuses the same password from assets/app_password.txt as the Flutter PasswordScreen.
+        -->
+        <activity
+            android:name=".enforcement.UninstallGuardActivity"
+            android:exported="false"
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode" />
+
+        <!--
             AccessibilityService — Phase 3 foundation.
             Allows Android to recognize AI Guardian as an accessibility service.
             The user must manually enable this from Settings → Accessibility.

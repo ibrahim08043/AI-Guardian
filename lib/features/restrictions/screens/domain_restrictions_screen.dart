@@ -4,6 +4,7 @@ import '../../../platform/models/domain_model.dart';
 
 /// Domain / Website restrictions screen.
 /// Allows users to manage a list of blocked domains.
+/// Phase 3B: Blocking is done via AccessibilityService (no VPN).
 class DomainRestrictionsScreen extends StatefulWidget {
   const DomainRestrictionsScreen({super.key});
 
@@ -16,7 +17,7 @@ class _DomainRestrictionsScreenState extends State<DomainRestrictionsScreen> {
   List<DomainModel> domains = [];
   bool isLoading = true;
   String? errorMessage;
-  bool isVpnActive = false;
+  bool isAccessibilityServiceEnabled = false;
 
   final TextEditingController _domainController = TextEditingController();
 
@@ -24,6 +25,7 @@ class _DomainRestrictionsScreenState extends State<DomainRestrictionsScreen> {
   void initState() {
     super.initState();
     _loadDomains();
+    _checkAccessibilityStatus();
   }
 
   @override
@@ -78,6 +80,19 @@ class _DomainRestrictionsScreenState extends State<DomainRestrictionsScreen> {
     }
   }
 
+  Future<void> _checkAccessibilityStatus() async {
+    try {
+      final status = await AndroidPlatformService.checkAccessibilityStatus();
+      if (mounted) {
+        setState(() {
+          isAccessibilityServiceEnabled = status?.isEnabled ?? false;
+        });
+      }
+    } catch (e) {
+      // Ignore — status check is best-effort
+    }
+  }
+
   Future<void> _addDomain() async {
     final input = _domainController.text.trim();
     if (input.isEmpty) {
@@ -89,10 +104,13 @@ class _DomainRestrictionsScreenState extends State<DomainRestrictionsScreen> {
 
     // Pre-validate: must contain a dot
     final normalized = _normalizeForDisplay(input);
-    if (!normalized.contains('.') || normalized.startsWith('.') || normalized.endsWith('.')) {
+    if (!normalized.contains('.') ||
+        normalized.startsWith('.') ||
+        normalized.endsWith('.')) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Invalid domain format. Example: youtube.com')),
+          const SnackBar(
+              content: Text('Invalid domain format. Example: youtube.com')),
         );
       }
       return;
@@ -114,7 +132,7 @@ class _DomainRestrictionsScreenState extends State<DomainRestrictionsScreen> {
           const SnackBar(content: Text('Domain added')),
         );
         await _loadDomains();
-        await _updateVpnIfNeeded();
+        await AndroidPlatformService.refreshBlockedDomains();
       } else {
         setState(() {
           isLoading = false;
@@ -136,7 +154,7 @@ class _DomainRestrictionsScreenState extends State<DomainRestrictionsScreen> {
       final success = await AndroidPlatformService.deleteDomain(domain);
       if (success) {
         await _loadDomains();
-        await _updateVpnIfNeeded();
+        await AndroidPlatformService.refreshBlockedDomains();
       }
     } catch (e) {
       if (mounted) {
@@ -153,58 +171,13 @@ class _DomainRestrictionsScreenState extends State<DomainRestrictionsScreen> {
           domain.domain, !domain.enabled);
       if (success) {
         await _loadDomains();
-        await _updateVpnIfNeeded();
+        await AndroidPlatformService.refreshBlockedDomains();
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error: $e')),
         );
-      }
-    }
-  }
-
-  Future<void> _updateVpnIfNeeded() async {
-    final enabledCount = domains.where((d) => d.enabled).length;
-    if (enabledCount > 0 && !isVpnActive) {
-      final success = await AndroidPlatformService.startDomainBlocking();
-      if (mounted) {
-        setState(() => isVpnActive = success);
-        if (!success) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('VPN permission required. Tap "Start Blocking" to grant it.'),
-              duration: Duration(seconds: 4),
-            ),
-          );
-        }
-      }
-    } else if (enabledCount == 0 && isVpnActive) {
-      await AndroidPlatformService.stopDomainBlocking();
-      if (mounted) {
-        setState(() => isVpnActive = false);
-      }
-    }
-  }
-
-  Future<void> _toggleVpn() async {
-    if (isVpnActive) {
-      await AndroidPlatformService.stopDomainBlocking();
-      if (mounted) {
-        setState(() => isVpnActive = false);
-      }
-    } else {
-      final success = await AndroidPlatformService.startDomainBlocking();
-      if (mounted) {
-        setState(() => isVpnActive = success);
-        if (!success) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('VPN permission denied or failed. Please grant VPN permission when prompted.'),
-              duration: Duration(seconds: 4),
-            ),
-          );
-        }
       }
     }
   }
@@ -225,44 +198,51 @@ class _DomainRestrictionsScreenState extends State<DomainRestrictionsScreen> {
       appBar: AppBar(title: const Text('Websites')),
       body: Column(
         children: [
-          // VPN status banner
+          // Accessibility service status banner
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            color: isVpnActive
+            color: isAccessibilityServiceEnabled
                 ? Colors.green.shade50
                 : Colors.orange.shade50,
             child: Row(
               children: [
                 Icon(
-                  isVpnActive ? Icons.shield : Icons.shield_outlined,
-                  color: isVpnActive ? Colors.green : Colors.orange,
+                  isAccessibilityServiceEnabled
+                      ? Icons.shield
+                      : Icons.shield_outlined,
+                  color: isAccessibilityServiceEnabled
+                      ? Colors.green
+                      : Colors.orange,
                   size: 20,
                 ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    isVpnActive
-                        ? 'VPN Active — DNS blocking enabled'
-                        : 'VPN Inactive — blocking disabled',
+                    isAccessibilityServiceEnabled
+                        ? 'Accessibility Active — website blocking enabled'
+                        : 'Accessibility Inactive — blocking disabled',
                     style: TextStyle(
                       fontSize: 13,
-                      color: isVpnActive
+                      color: isAccessibilityServiceEnabled
                           ? Colors.green.shade800
                           : Colors.orange.shade800,
                     ),
                   ),
                 ),
-                TextButton(
-                  onPressed: _toggleVpn,
-                  child: Text(
-                    isVpnActive ? 'Stop' : 'Start Blocking',
-                    style: TextStyle(
-                      color: isVpnActive ? Colors.red : Colors.green,
-                      fontWeight: FontWeight.bold,
+                if (!isAccessibilityServiceEnabled)
+                  TextButton(
+                    onPressed: () async {
+                      await AndroidPlatformService.openAccessibilitySettings();
+                    },
+                    child: Text(
+                      'Enable',
+                      style: TextStyle(
+                        color: Colors.blue,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
-                ),
               ],
             ),
           ),

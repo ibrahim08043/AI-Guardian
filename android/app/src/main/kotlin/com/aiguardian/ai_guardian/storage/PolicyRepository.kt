@@ -27,6 +27,14 @@ import com.aiguardian.ai_guardian.storage.PolicyDatabaseHelper.Companion.COLUMN_
 import com.aiguardian.ai_guardian.storage.PolicyDatabaseHelper.Companion.COLUMN_SESSION_ID
 import com.aiguardian.ai_guardian.storage.PolicyDatabaseHelper.Companion.TABLE_POLICIES
 import com.aiguardian.ai_guardian.storage.PolicyDatabaseHelper.Companion.TABLE_USAGE_SESSIONS
+import com.aiguardian.ai_guardian.storage.PolicyDatabaseHelper.Companion.TABLE_APP_SCHEDULES
+import com.aiguardian.ai_guardian.storage.PolicyDatabaseHelper.Companion.COLUMN_SCHED_ID
+import com.aiguardian.ai_guardian.storage.PolicyDatabaseHelper.Companion.COLUMN_SCHED_PACKAGE
+import com.aiguardian.ai_guardian.storage.PolicyDatabaseHelper.Companion.COLUMN_SCHED_START
+import com.aiguardian.ai_guardian.storage.PolicyDatabaseHelper.Companion.COLUMN_SCHED_END
+import com.aiguardian.ai_guardian.storage.PolicyDatabaseHelper.Companion.COLUMN_SCHED_ENABLED
+import com.aiguardian.ai_guardian.storage.PolicyDatabaseHelper.Companion.COLUMN_SCHED_CREATED_AT
+import com.aiguardian.ai_guardian.storage.PolicyDatabaseHelper.Companion.COLUMN_SCHED_UPDATED_AT
 
 /**
  * Repository layer for persistent policy storage.
@@ -123,21 +131,13 @@ class PolicyRepository(private val dbHelper: PolicyDatabaseHelper) {
 
     /**
      * Read a Policy from a cursor row, including Phase C fields.
+     * Also loads schedules from the app_schedules table.
      */
     private fun readPolicyFromCursor(cursor: android.database.Cursor): Policy? {
         return try {
             val packageName = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_PACKAGE_NAME))
             val actionStr = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_ACTION))
             val enabled = cursor.getInt(cursor.getColumnIndexOrThrow(COLUMN_ENABLED)) != 0
-
-            // Phase C: Schedule fields
-            val scheduleEnabled = cursor.getInt(cursor.getColumnIndexOrThrow(COLUMN_SCHEDULE_ENABLED)) != 0
-            val scheduleStart = if (!cursor.isNull(cursor.getColumnIndexOrThrow(COLUMN_SCHEDULE_START))) {
-                cursor.getInt(cursor.getColumnIndexOrThrow(COLUMN_SCHEDULE_START))
-            } else null
-            val scheduleEnd = if (!cursor.isNull(cursor.getColumnIndexOrThrow(COLUMN_SCHEDULE_END))) {
-                cursor.getInt(cursor.getColumnIndexOrThrow(COLUMN_SCHEDULE_END))
-            } else null
 
             // Phase C: Daily limit fields
             val dailyLimitEnabled = cursor.getInt(cursor.getColumnIndexOrThrow(COLUMN_DAILY_LIMIT_ENABLED)) != 0
@@ -152,15 +152,8 @@ class PolicyRepository(private val dbHelper: PolicyDatabaseHelper) {
                 return null
             }
 
-            // Build schedule if both start and end are present
-            val schedule = if (scheduleStart != null && scheduleEnd != null) {
-                try {
-                    RestrictionSchedule.fromMinutes(scheduleStart, scheduleEnd)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Invalid schedule for $packageName: ${e.message}")
-                    null
-                }
-            } else null
+            // Load schedules from app_schedules table
+            val schedules = getSchedulesForPackage(packageName)
 
             // Build daily limit if present
             val dailyLimit = dailyLimitMinutes?.let { minutes ->
@@ -176,8 +169,7 @@ class PolicyRepository(private val dbHelper: PolicyDatabaseHelper) {
                 packageName = packageName,
                 action = action,
                 enabled = enabled,
-                schedule = schedule,
-                scheduleEnabled = scheduleEnabled,
+                schedules = schedules,
                 dailyLimit = dailyLimit,
                 dailyLimitEnabled = dailyLimitEnabled,
             )
@@ -283,15 +275,11 @@ class PolicyRepository(private val dbHelper: PolicyDatabaseHelper) {
             put(COLUMN_ENABLED, if (policy.enabled) 1 else 0)
             put(COLUMN_UPDATED_AT, System.currentTimeMillis())
 
-            // Phase C: Schedule
-            put(COLUMN_SCHEDULE_ENABLED, if (policy.scheduleEnabled) 1 else 0)
-            if (policy.schedule != null) {
-                put(COLUMN_SCHEDULE_START, policy.schedule.startMinutes)
-                put(COLUMN_SCHEDULE_END, policy.schedule.endMinutes)
-            } else {
-                putNull(COLUMN_SCHEDULE_START)
-                putNull(COLUMN_SCHEDULE_END)
-            }
+            // Phase C: Schedule — now stored in app_schedules table
+            // Keep old columns as NULL for backward compat
+            put(COLUMN_SCHEDULE_ENABLED, 0)
+            putNull(COLUMN_SCHEDULE_START)
+            putNull(COLUMN_SCHEDULE_END)
 
             // Phase C: Daily limit
             put(COLUMN_DAILY_LIMIT_ENABLED, if (policy.dailyLimitEnabled) 1 else 0)
@@ -324,6 +312,9 @@ class PolicyRepository(private val dbHelper: PolicyDatabaseHelper) {
                 "$COLUMN_PACKAGE_NAME = ?",
                 arrayOf(packageName),
             )
+
+            // Also delete all schedules for this package
+            deleteSchedulesForPackage(packageName)
 
             val success = result > 0
 
@@ -388,16 +379,109 @@ class PolicyRepository(private val dbHelper: PolicyDatabaseHelper) {
     // -------------------------------------------------------------------------
 
     /**
-     * Update the schedule for a policy.
+     * Get all schedules for a package from the app_schedules table.
+     */
+    fun getSchedulesForPackage(packageName: String): List<RestrictionSchedule> {
+        if (packageName.isBlank()) return emptyList()
+
+        val db = dbHelper.getReadableDB() ?: run {
+            Log.e(TAG, "Cannot read from database")
+            return emptyList()
+        }
+
+        return try {
+            val cursor = db.query(
+                TABLE_APP_SCHEDULES,
+                null,
+                "$COLUMN_SCHED_PACKAGE = ?",
+                arrayOf(packageName),
+                null, null,
+                "$COLUMN_SCHED_CREATED_AT ASC",
+            )
+
+            val schedules = mutableListOf<RestrictionSchedule>()
+            cursor.use {
+                while (it.moveToNext()) {
+                    val id = it.getLong(it.getColumnIndexOrThrow(COLUMN_SCHED_ID))
+                    val start = it.getInt(it.getColumnIndexOrThrow(COLUMN_SCHED_START))
+                    val end = it.getInt(it.getColumnIndexOrThrow(COLUMN_SCHED_END))
+                    val schedEnabled = it.getInt(it.getColumnIndexOrThrow(COLUMN_SCHED_ENABLED)) != 0
+
+                    try {
+                        schedules.add(
+                            RestrictionSchedule(
+                                startMinutes = start,
+                                endMinutes = end,
+                                id = id,
+                                enabled = schedEnabled,
+                            )
+                        )
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Invalid schedule row id=$id for $packageName: ${e.message}")
+                    }
+                }
+            }
+
+            Log.d(TAG, "Loaded ${schedules.size} schedules for $packageName")
+            schedules
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get schedules for $packageName: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * Save a new schedule for a package.
+     * Returns the inserted row ID, or -1 on failure.
+     */
+    fun saveSchedule(
+        packageName: String,
+        startMinutes: Int,
+        endMinutes: Int,
+        enabled: Boolean = true,
+    ): Long {
+        if (packageName.isBlank()) return -1
+
+        val db = dbHelper.getWritableDB() ?: run {
+            Log.e(TAG, "Cannot write to database")
+            return -1
+        }
+
+        return try {
+            val now = System.currentTimeMillis()
+            val values = ContentValues().apply {
+                put(COLUMN_SCHED_PACKAGE, packageName)
+                put(COLUMN_SCHED_START, startMinutes)
+                put(COLUMN_SCHED_END, endMinutes)
+                put(COLUMN_SCHED_ENABLED, if (enabled) 1 else 0)
+                put(COLUMN_SCHED_CREATED_AT, now)
+                put(COLUMN_SCHED_UPDATED_AT, now)
+            }
+
+            val result = db.insert(TABLE_APP_SCHEDULES, null, values)
+            if (result > 0) {
+                Log.i(TAG, "Saved schedule for $packageName: $startMinutes→$endMinutes (id=$result)")
+            } else {
+                Log.e(TAG, "Failed to save schedule for $packageName")
+            }
+            result
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception while saving schedule: ${e.message}")
+            -1
+        }
+    }
+
+    /**
+     * Update an existing schedule by ID.
      * Returns true if successful, false otherwise.
      */
-    fun updateSchedule(
-        packageName: String,
-        scheduleEnabled: Boolean,
-        startMinutes: Int?,
-        endMinutes: Int?,
+    fun updateScheduleById(
+        id: Long,
+        startMinutes: Int,
+        endMinutes: Int,
+        enabled: Boolean,
     ): Boolean {
-        if (packageName.isBlank()) return false
+        if (id <= 0) return false
 
         val db = dbHelper.getWritableDB() ?: run {
             Log.e(TAG, "Cannot write to database")
@@ -406,33 +490,146 @@ class PolicyRepository(private val dbHelper: PolicyDatabaseHelper) {
 
         return try {
             val values = ContentValues().apply {
-                put(COLUMN_SCHEDULE_ENABLED, if (scheduleEnabled) 1 else 0)
-                if (startMinutes != null && endMinutes != null) {
-                    put(COLUMN_SCHEDULE_START, startMinutes)
-                    put(COLUMN_SCHEDULE_END, endMinutes)
-                } else {
-                    putNull(COLUMN_SCHEDULE_START)
-                    putNull(COLUMN_SCHEDULE_END)
-                }
-                put(COLUMN_UPDATED_AT, System.currentTimeMillis())
+                put(COLUMN_SCHED_START, startMinutes)
+                put(COLUMN_SCHED_END, endMinutes)
+                put(COLUMN_SCHED_ENABLED, if (enabled) 1 else 0)
+                put(COLUMN_SCHED_UPDATED_AT, System.currentTimeMillis())
             }
 
             val result = db.update(
-                TABLE_POLICIES,
+                TABLE_APP_SCHEDULES,
                 values,
-                "$COLUMN_PACKAGE_NAME = ?",
-                arrayOf(packageName),
+                "$COLUMN_SCHED_ID = ?",
+                arrayOf(id.toString()),
             )
 
             val success = result > 0
             if (success) {
-                Log.i(TAG, "Updated schedule for $packageName: enabled=$scheduleEnabled")
+                Log.i(TAG, "Updated schedule id=$id: $startMinutes→$endMinutes enabled=$enabled")
+            } else {
+                Log.w(TAG, "No schedule found to update: id=$id")
             }
             success
         } catch (e: Exception) {
             Log.e(TAG, "Exception while updating schedule: ${e.message}")
             false
         }
+    }
+
+    /**
+     * Delete a schedule by ID.
+     * Returns true if successful, false otherwise.
+     */
+    fun deleteScheduleById(id: Long): Boolean {
+        if (id <= 0) return false
+
+        val db = dbHelper.getWritableDB() ?: run {
+            Log.e(TAG, "Cannot write to database")
+            return false
+        }
+
+        return try {
+            val result = db.delete(
+                TABLE_APP_SCHEDULES,
+                "$COLUMN_SCHED_ID = ?",
+                arrayOf(id.toString()),
+            )
+
+            val success = result > 0
+            if (success) {
+                Log.i(TAG, "Deleted schedule id=$id")
+            } else {
+                Log.w(TAG, "No schedule found to delete: id=$id")
+            }
+            success
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception while deleting schedule: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Toggle the enabled state of a schedule by ID.
+     * Returns true if successful, false otherwise.
+     */
+    fun toggleScheduleEnabled(id: Long, enabled: Boolean): Boolean {
+        if (id <= 0) return false
+
+        val db = dbHelper.getWritableDB() ?: run {
+            Log.e(TAG, "Cannot write to database")
+            return false
+        }
+
+        return try {
+            val values = ContentValues().apply {
+                put(COLUMN_SCHED_ENABLED, if (enabled) 1 else 0)
+                put(COLUMN_SCHED_UPDATED_AT, System.currentTimeMillis())
+            }
+
+            val result = db.update(
+                TABLE_APP_SCHEDULES,
+                values,
+                "$COLUMN_SCHED_ID = ?",
+                arrayOf(id.toString()),
+            )
+
+            val success = result > 0
+            if (success) {
+                Log.i(TAG, "Toggled schedule id=$id enabled=$enabled")
+            } else {
+                Log.w(TAG, "No schedule found to toggle: id=$id")
+            }
+            success
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception while toggling schedule: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Delete all schedules for a package.
+     * Called when a policy is deleted.
+     */
+    fun deleteSchedulesForPackage(packageName: String): Boolean {
+        if (packageName.isBlank()) return false
+
+        val db = dbHelper.getWritableDB() ?: run {
+            Log.e(TAG, "Cannot write to database")
+            return false
+        }
+
+        return try {
+            val result = db.delete(
+                TABLE_APP_SCHEDULES,
+                "$COLUMN_SCHED_PACKAGE = ?",
+                arrayOf(packageName),
+            )
+            Log.i(TAG, "Deleted $result schedules for $packageName")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception while deleting schedules for $packageName: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Legacy updateSchedule for backward compatibility.
+     * Delegates to the new saveSchedule method.
+     */
+    fun updateSchedule(
+        packageName: String,
+        scheduleEnabled: Boolean,
+        startMinutes: Int?,
+        endMinutes: Int?,
+    ): Boolean {
+        if (packageName.isBlank()) return false
+        if (!scheduleEnabled || startMinutes == null || endMinutes == null) {
+            // Disabling or clearing schedule — delete all schedules for this package
+            return deleteSchedulesForPackage(packageName)
+        }
+        // Save a new schedule
+        val id = saveSchedule(packageName, startMinutes, endMinutes, true)
+        return id > 0
     }
 
     // -------------------------------------------------------------------------

@@ -80,7 +80,7 @@ class MainActivity : FlutterActivity() {
         AIGuardianAccessibilityService.contentFilterEngine = contentFilterEngine
         AIGuardianAccessibilityService.contentFilterRepository = contentFilterRepository
 
-        Log.i(TAG, "ContentFilterEngine initialized with ${enabledRules.size} rules")
+        Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG MAIN_ACTIVITY dbHelper=${dbHelper.hashCode()} dbName=${dbHelper.databaseName} dbPath=${dbHelper.readableDatabase.path} contentFilterRepo=${contentFilterRepository.hashCode()} enabledRules=${enabledRules.size}")
 
         // MethodChannel — request/response from Flutter
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL)

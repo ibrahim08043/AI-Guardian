@@ -76,8 +76,7 @@ class ForegroundMonitorTest {
         engine.setPolicy(Policy(
             packageName = "com.schedule.start",
             action = PolicyAction.ALLOW,
-            schedule = RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes),
-            scheduleEnabled = true,
+            schedules = listOf(RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes)),
         ))
 
         monitor.onForegroundAppChanged("com.schedule.start")
@@ -94,8 +93,7 @@ class ForegroundMonitorTest {
         engine.setPolicy(Policy(
             packageName = "com.schedule.end",
             action = PolicyAction.ALLOW,
-            schedule = RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes),
-            scheduleEnabled = true,
+            schedules = listOf(RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes)),
         ))
 
         val result = monitor.onForegroundAppChanged("com.schedule.end")
@@ -114,8 +112,7 @@ class ForegroundMonitorTest {
         engine.setPolicy(Policy(
             packageName = "com.schedule.disabled",
             action = PolicyAction.ALLOW,
-            schedule = RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes),
-            scheduleEnabled = false,
+            schedules = listOf(RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes, enabled = false)),
         ))
 
         monitor.onForegroundAppChanged("com.schedule.disabled")
@@ -182,8 +179,7 @@ class ForegroundMonitorTest {
         engine.setPolicy(Policy(
             packageName = "com.change.test",
             action = PolicyAction.ALLOW,
-            schedule = RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes),
-            scheduleEnabled = true,
+            schedules = listOf(RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes)),
         ))
 
         monitor.onForegroundAppChanged("com.change.test")
@@ -193,8 +189,7 @@ class ForegroundMonitorTest {
         engine.setPolicy(Policy(
             packageName = "com.change.test",
             action = PolicyAction.BLOCK,
-            schedule = RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes),
-            scheduleEnabled = true,
+            schedules = listOf(RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes)),
         ))
 
         monitor.onPolicyChanged("com.change.test")
@@ -226,8 +221,7 @@ class ForegroundMonitorTest {
         engine.setPolicy(Policy(
             packageName = "com.remove.test",
             action = PolicyAction.ALLOW,
-            schedule = RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes),
-            scheduleEnabled = true,
+            schedules = listOf(RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes)),
         ))
 
         monitor.onForegroundAppChanged("com.remove.test")
@@ -249,8 +243,7 @@ class ForegroundMonitorTest {
         engine.setPolicy(Policy(
             packageName = "com.cancel.test",
             action = PolicyAction.ALLOW,
-            schedule = RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes),
-            scheduleEnabled = true,
+            schedules = listOf(RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes)),
         ))
 
         monitor.onForegroundAppChanged("com.cancel.test")

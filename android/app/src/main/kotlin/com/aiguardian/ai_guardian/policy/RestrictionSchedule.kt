@@ -20,6 +20,12 @@ data class RestrictionSchedule(
 
     /** Minutes from midnight when blocking ends (0–1439). */
     val endMinutes: Int,
+
+    /** Database row ID. 0 for in-memory schedules not yet persisted. */
+    val id: Long = 0,
+
+    /** Whether this individual schedule is enabled. */
+    val enabled: Boolean = true,
 ) {
     init {
         require(startMinutes in 0..1439) {

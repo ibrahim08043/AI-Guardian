@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Uninstall Guard password protection screen.
+    Shown when an uninstall attempt on AI Guardian is detected.
+    Reuses the same password from assets/app_password.txt.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:padding="24dp"
+    android:background="@android:color/white">
+
+    <!-- Lock icon -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="&#x1F512;"
+        android:textSize="48sp"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Title: "AI Guardian Protection" -->
+    <TextView
+        android:id="@+id/guard_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="AI Guardian Protection"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        android:textColor="@android:color/black"
+        android:gravity="center"
+        android:layout_marginBottom="8dp" />
+
+    <!-- Subtitle: "Enter your password to continue." -->
+    <TextView
+        android:id="@+id/guard_subtitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Enter your password to continue."
+        android:textSize="16sp"
+        android:textColor="@android:color/darker_gray"
+        android:gravity="center"
+        android:layout_marginBottom="32dp" />
+
+    <!-- Password input -->
+    <EditText
+        android:id="@+id/guard_password_input"
+        android:layout_width="300dp"
+        android:layout_height="wrap_content"
+        android:hint="Password"
+        android:inputType="textPassword"
+        android:singleLine="true"
+        android:padding="12dp"
+        android:layout_marginBottom="8dp"
+        android:background="@android:color/darker_gray" />
+
+    <!-- Error message (hidden by default) -->
+    <TextView
+        android:id="@+id/guard_error_message"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textSize="14sp"
+        android:textColor="#FF0000"
+        android:gravity="center"
+        android:visibility="gone"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Verify button -->
+    <Button
+        android:id="@+id/guard_verify_button"
+        android:layout_width="300dp"
+        android:layout_height="48dp"
+        android:text="Verify"
+        android:textSize="16sp"
+        android:textColor="@android:color/white"
+        android:background="@android:color/darker_gray"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Cancel button -->
+    <Button
+        android:id="@+id/guard_cancel_button"
+        android:layout_width="300dp"
+        android:layout_height="48dp"
+        android:text="Cancel"
+        android:textSize="16sp"
+        android:textColor="@android:color/darker_gray"
+        android:background="@android:color/white" />
+
+</LinearLayout>

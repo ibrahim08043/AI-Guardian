@@ -27,19 +27,32 @@ class _ContentFilterScreenState extends State<ContentFilterScreen> {
   }
 
   Future<void> _loadRules() async {
+    debugPrint('[AI_GUARDIAN_CONTENT_FILTER_DEBUG] DART_LOAD_START');
+    if (!mounted) {
+      debugPrint('[AI_GUARDIAN_CONTENT_FILTER_DEBUG] DART_LOAD_ABORT not mounted');
+      return;
+    }
     setState(() => _isLoading = true);
     try {
       final rules = await AndroidPlatformService.getAllContentFilterRules();
+      debugPrint('[AI_GUARDIAN_CONTENT_FILTER_DEBUG] DART_LOAD_RESULT count=${rules.length}');
+      for (final r in rules) {
+        debugPrint('[AI_GUARDIAN_CONTENT_FILTER_DEBUG]   rule id=${r['id']} (type=${r['id'].runtimeType}) phrase=${r['phrase']} enabled=${r['enabled']} (type=${r['enabled'].runtimeType}) matchMode=${r['matchMode']}');
+      }
       final masterEnabled =
           await AndroidPlatformService.isMasterContentFilterEnabled();
-      if (!mounted) return;
+      debugPrint('[AI_GUARDIAN_CONTENT_FILTER_DEBUG] DART_LOAD_MASTER masterEnabled=$masterEnabled');
+      if (!mounted) {
+        debugPrint('[AI_GUARDIAN_CONTENT_FILTER_DEBUG] DART_LOAD_ABORT not mounted after await');
+        return;
+      }
       setState(() {
         _rules = rules;
         _masterEnabled = masterEnabled;
         _isLoading = false;
       });
     } catch (e) {
-      debugPrint('[ContentFilterScreen] Failed to load rules: $e');
+      debugPrint('[AI_GUARDIAN_CONTENT_FILTER_DEBUG] DART_LOAD_FAILED error=$e');
       if (!mounted) return;
       setState(() {
         _isLoading = false;
@@ -49,26 +62,35 @@ class _ContentFilterScreenState extends State<ContentFilterScreen> {
   }
 
   Future<void> _toggleMaster(bool value) async {
+    debugPrint('[AI_GUARDIAN_CONTENT_FILTER_DEBUG] DART_TOGGLE_MASTER value=$value');
     try {
       await AndroidPlatformService.setMasterContentFilterEnabled(value);
       if (!mounted) return;
       setState(() => _masterEnabled = value);
     } catch (e) {
-      debugPrint('[ContentFilterScreen] Failed to toggle master: $e');
+      debugPrint('[AI_GUARDIAN_CONTENT_FILTER_DEBUG] DART_TOGGLE_MASTER_FAILED error=$e');
     }
   }
 
   Future<void> _toggleRule(int id, bool currentEnabled) async {
+    final newEnabled = !currentEnabled;
+    debugPrint('[AI_GUARDIAN_CONTENT_FILTER_DEBUG] DART_TOGGLE_START id=$id currentEnabled=$currentEnabled newEnabled=$newEnabled idType=${id.runtimeType}');
     try {
-      await AndroidPlatformService.setContentFilterRuleEnabled(
-          id, !currentEnabled);
-      _loadRules();
+      final success = await AndroidPlatformService.setContentFilterRuleEnabled(
+          id, newEnabled);
+      debugPrint('[AI_GUARDIAN_CONTENT_FILTER_DEBUG] DART_TOGGLE_RESULT success=$success');
+      await _loadRules();
     } catch (e) {
-      debugPrint('[ContentFilterScreen] Failed to toggle rule: $e');
+      debugPrint('[AI_GUARDIAN_CONTENT_FILTER_DEBUG] DART_TOGGLE_FAILED id=$id error=$e');
     }
   }
 
   Future<void> _deleteRule(int id) async {
+    debugPrint('[AI_GUARDIAN_CONTENT_FILTER_DEBUG] DART_DELETE_START id=$id idType=${id.runtimeType}');
+    if (!mounted) {
+      debugPrint('[AI_GUARDIAN_CONTENT_FILTER_DEBUG] DART_DELETE_ABORT not mounted before dialog');
+      return;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -88,12 +110,15 @@ class _ContentFilterScreenState extends State<ContentFilterScreen> {
       ),
     );
 
+    debugPrint('[AI_GUARDIAN_CONTENT_FILTER_DEBUG] DART_DELETE_DIALOG confirmed=$confirmed');
+
     if (confirmed == true) {
       try {
-        await AndroidPlatformService.deleteContentFilterRule(id);
-        _loadRules();
+        final success = await AndroidPlatformService.deleteContentFilterRule(id);
+        debugPrint('[AI_GUARDIAN_CONTENT_FILTER_DEBUG] DART_DELETE_RESULT id=$id success=$success');
+        await _loadRules();
       } catch (e) {
-        debugPrint('[ContentFilterScreen] Failed to delete rule: $e');
+        debugPrint('[AI_GUARDIAN_CONTENT_FILTER_DEBUG] DART_DELETE_FAILED id=$id error=$e');
       }
     }
   }
@@ -181,12 +206,14 @@ class _ContentFilterScreenState extends State<ContentFilterScreen> {
 
     if (result == true && phraseController.text.trim().isNotEmpty) {
       final mode = exactMode ? 'EXACT' : 'CONTAINS';
+      debugPrint('[AI_GUARDIAN_CONTENT_FILTER_DEBUG] DART_ADD_START phrase=${phraseController.text.trim()} mode=$mode');
       final id = await AndroidPlatformService.saveContentFilterRule(
         phrase: phraseController.text.trim(),
         matchMode: mode,
       );
-      if (id > 0) {
-        _loadRules();
+      debugPrint('[AI_GUARDIAN_CONTENT_FILTER_DEBUG] DART_ADD_RESULT id=$id');
+      if (id > 0 && mounted) {
+        await _loadRules();
       }
     }
 
@@ -272,9 +299,13 @@ class _ContentFilterScreenState extends State<ContentFilterScreen> {
               itemBuilder: (context, index) {
                 final rule = _rules[index];
                 final phrase = rule['phrase'] as String? ?? '';
-                final enabled = rule['enabled'] == true;
+                // Handle enabled being bool, int (0/1), or null
+                final rawEnabled = rule['enabled'];
+                final enabled = rawEnabled == true || rawEnabled == 1;
                 final matchMode = rule['matchMode'] as String? ?? 'CONTAINS';
-                final id = rule['id'] as int? ?? 0;
+                // Handle id being int, long, or num
+                final rawId = rule['id'];
+                final int id = rawId is int ? rawId : (rawId is num ? rawId.toInt() : 0);
 
                 return Card(
                   margin:
@@ -308,10 +339,14 @@ class _ContentFilterScreenState extends State<ContentFilterScreen> {
                       children: [
                         Switch(
                           value: enabled,
-                          onChanged: (_) => _toggleRule(id, enabled),
+                          onChanged: (bool newValue) {
+                            debugPrint('[AI_GUARDIAN_CONTENT_FILTER_DEBUG] SWITCH_ONCHANGED id=$id oldEnabled=$enabled newRequested=$newValue');
+                            _toggleRule(id, enabled);
+                          },
                         ),
                         PopupMenuButton<String>(
                           onSelected: (value) {
+                            debugPrint('[AI_GUARDIAN_CONTENT_FILTER_DEBUG] POPUP_SELECTED value=$value id=$id');
                             if (value == 'delete') {
                               _deleteRule(id);
                             }

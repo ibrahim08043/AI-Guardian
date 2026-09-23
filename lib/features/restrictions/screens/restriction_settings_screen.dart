@@ -33,7 +33,7 @@ class _RestrictionSettingsScreenState extends State<RestrictionSettingsScreen> {
 
   // Current policy state
   bool _isRestricted = false;
-  ScheduleModel _schedule = const ScheduleModel();
+  List<AppScheduleModel> _schedules = [];
   DailyLimitModel _dailyLimit = const DailyLimitModel();
 
   // Usage tracking
@@ -64,7 +64,7 @@ class _RestrictionSettingsScreenState extends State<RestrictionSettingsScreen> {
         _isLoading = false;
         if (policy != null) {
           _isRestricted = policy.enabled && policy.action == PolicyActionModel.block;
-          _schedule = policy.schedule;
+          _schedules = policy.schedules;
           _dailyLimit = policy.dailyLimit;
         }
         _todayUsageMinutes = usage?['usageMinutes'] as int? ?? 0;
@@ -92,13 +92,13 @@ class _RestrictionSettingsScreenState extends State<RestrictionSettingsScreen> {
         await AndroidPlatformService.savePolicy(policy);
       } else {
         // Disable restriction.
-        // If schedule or daily limit is configured, keep the policy row alive
-        // with action=ALLOW — the schedule/limit remain the sole restriction.
+        // If schedules or daily limit are configured, keep the policy row alive
+        // with action=ALLOW — the schedules/limit remain the sole restriction.
         // Only delete the row if there are no active restrictions at all.
-        final hasSchedule = _schedule.enabled && _schedule.startMinutes != null;
+        final hasSchedules = _schedules.isNotEmpty;
         final hasLimit = _dailyLimit.enabled && _dailyLimit.limitMinutes != null;
 
-        if (hasSchedule || hasLimit) {
+        if (hasSchedules || hasLimit) {
           // Update policy to ALLOW so schedule/limit stay in effect
           final policy = PolicyModel(
             packageName: widget.packageName,
@@ -134,65 +134,55 @@ class _RestrictionSettingsScreenState extends State<RestrictionSettingsScreen> {
     }
   }
 
-  Future<void> _configureSchedule() async {
-    bool scheduleEnabled = _schedule.enabled;
-    int startHour = _schedule.startMinutes != null ? _schedule.startMinutes! ~/ 60 : 18;
-    int startMin = _schedule.startMinutes != null ? _schedule.startMinutes! % 60 : 0;
-    int endHour = _schedule.endMinutes != null ? _schedule.endMinutes! ~/ 60 : 21;
-    int endMin = _schedule.endMinutes != null ? _schedule.endMinutes! % 60 : 0;
+  Future<void> _addSchedule() async {
+    int startHour = 18;
+    int startMin = 0;
+    int endHour = 21;
+    int endMin = 0;
 
     final result = await showDialog<bool>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Schedule Blocking'),
+          title: const Text('Add Schedule'),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                SwitchListTile(
-                  title: const Text('Enable Schedule'),
-                  subtitle: const Text('Block app during specific hours'),
-                  value: scheduleEnabled,
-                  onChanged: (v) => setDialogState(() => scheduleEnabled = v),
+                ListTile(
+                  title: const Text('Start Time'),
+                  subtitle: Text(ScheduleModel.formatTime(startHour * 60 + startMin)),
+                  trailing: const Icon(Icons.access_time),
+                  onTap: () async {
+                    final picked = await showTimePicker(
+                      context: context,
+                      initialTime: TimeOfDay(hour: startHour, minute: startMin),
+                    );
+                    if (picked != null) {
+                      setDialogState(() {
+                        startHour = picked.hour;
+                        startMin = picked.minute;
+                      });
+                    }
+                  },
                 ),
-                if (scheduleEnabled) ...[
-                  const SizedBox(height: 16),
-                  ListTile(
-                    title: const Text('Start Time'),
-                    subtitle: Text(ScheduleModel.formatTime(startHour * 60 + startMin)),
-                    trailing: const Icon(Icons.access_time),
-                    onTap: () async {
-                      final picked = await showTimePicker(
-                        context: context,
-                        initialTime: TimeOfDay(hour: startHour, minute: startMin),
-                      );
-                      if (picked != null) {
-                        setDialogState(() {
-                          startHour = picked.hour;
-                          startMin = picked.minute;
-                        });
-                      }
-                    },
-                  ),
-                  ListTile(
-                    title: const Text('End Time'),
-                    subtitle: Text(ScheduleModel.formatTime(endHour * 60 + endMin)),
-                    trailing: const Icon(Icons.access_time),
-                    onTap: () async {
-                      final picked = await showTimePicker(
-                        context: context,
-                        initialTime: TimeOfDay(hour: endHour, minute: endMin),
-                      );
-                      if (picked != null) {
-                        setDialogState(() {
-                          endHour = picked.hour;
-                          endMin = picked.minute;
-                        });
-                      }
-                    },
-                  ),
-                ],
+                ListTile(
+                  title: const Text('End Time'),
+                  subtitle: Text(ScheduleModel.formatTime(endHour * 60 + endMin)),
+                  trailing: const Icon(Icons.access_time),
+                  onTap: () async {
+                    final picked = await showTimePicker(
+                      context: context,
+                      initialTime: TimeOfDay(hour: endHour, minute: endMin),
+                    );
+                    if (picked != null) {
+                      setDialogState(() {
+                        endHour = picked.hour;
+                        endMin = picked.minute;
+                      });
+                    }
+                  },
+                ),
               ],
             ),
           ),
@@ -201,7 +191,119 @@ class _RestrictionSettingsScreenState extends State<RestrictionSettingsScreen> {
               onPressed: () => Navigator.pop(context, false),
               child: const Text('Cancel'),
             ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Add'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (result == true) {
+      try {
+        setState(() => _isSaving = true);
+
+        final startMinutes = ScheduleModel.toMinutes(startHour, startMin);
+        final endMinutes = ScheduleModel.toMinutes(endHour, endMin);
+
+        final id = await AndroidPlatformService.addSchedule(
+          packageName: widget.packageName,
+          startMinutes: startMinutes,
+          endMinutes: endMinutes,
+          enabled: true,
+        );
+
+        if (!mounted) return;
+
+        if (id > 0) {
+          final newSchedule = AppScheduleModel(
+            id: id,
+            startMinutes: startMinutes,
+            endMinutes: endMinutes,
+            enabled: true,
+          );
+          setState(() {
+            _schedules = [..._schedules, newSchedule];
+            _isSaving = false;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Schedule added')),
+          );
+        } else {
+          setState(() => _isSaving = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Failed to add schedule')),
+          );
+        }
+      } catch (e) {
+        if (!mounted) return;
+        setState(() => _isSaving = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error adding schedule: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _editSchedule(AppScheduleModel schedule) async {
+    int startHour = schedule.startMinutes ~/ 60;
+    int startMin = schedule.startMinutes % 60;
+    int endHour = schedule.endMinutes ~/ 60;
+    int endMin = schedule.endMinutes % 60;
+
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Edit Schedule'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  title: const Text('Start Time'),
+                  subtitle: Text(ScheduleModel.formatTime(startHour * 60 + startMin)),
+                  trailing: const Icon(Icons.access_time),
+                  onTap: () async {
+                    final picked = await showTimePicker(
+                      context: context,
+                      initialTime: TimeOfDay(hour: startHour, minute: startMin),
+                    );
+                    if (picked != null) {
+                      setDialogState(() {
+                        startHour = picked.hour;
+                        startMin = picked.minute;
+                      });
+                    }
+                  },
+                ),
+                ListTile(
+                  title: const Text('End Time'),
+                  subtitle: Text(ScheduleModel.formatTime(endHour * 60 + endMin)),
+                  trailing: const Icon(Icons.access_time),
+                  onTap: () async {
+                    final picked = await showTimePicker(
+                      context: context,
+                      initialTime: TimeOfDay(hour: endHour, minute: endMin),
+                    );
+                    if (picked != null) {
+                      setDialogState(() {
+                        endHour = picked.hour;
+                        endMin = picked.minute;
+                      });
+                    }
+                  },
+                ),
+              ],
+            ),
+          ),
+          actions: [
             TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
               onPressed: () => Navigator.pop(context, true),
               child: const Text('Save'),
             ),
@@ -217,34 +319,121 @@ class _RestrictionSettingsScreenState extends State<RestrictionSettingsScreen> {
         final startMinutes = ScheduleModel.toMinutes(startHour, startMin);
         final endMinutes = ScheduleModel.toMinutes(endHour, endMin);
 
-        await AndroidPlatformService.saveSchedule(
-          packageName: widget.packageName,
-          enabled: scheduleEnabled,
-          startMinutes: scheduleEnabled ? startMinutes : null,
-          endMinutes: scheduleEnabled ? endMinutes : null,
+        final success = await AndroidPlatformService.updateSchedule(
+          id: schedule.id,
+          startMinutes: startMinutes,
+          endMinutes: endMinutes,
+          enabled: schedule.enabled,
         );
 
         if (!mounted) return;
 
-        setState(() {
-          _schedule = ScheduleModel(
-            enabled: scheduleEnabled,
-            startMinutes: scheduleEnabled ? startMinutes : null,
-            endMinutes: scheduleEnabled ? endMinutes : null,
+        if (success) {
+          setState(() {
+            _schedules = _schedules.map((s) {
+              if (s.id == schedule.id) {
+                return s.copyWith(startMinutes: startMinutes, endMinutes: endMinutes);
+              }
+              return s;
+            }).toList();
+            _isSaving = false;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Schedule updated')),
           );
-          _isSaving = false;
-        });
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Schedule updated')),
-        );
+        } else {
+          setState(() => _isSaving = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Failed to update schedule')),
+          );
+        }
       } catch (e) {
         if (!mounted) return;
         setState(() => _isSaving = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error saving schedule: $e')),
+          SnackBar(content: Text('Error updating schedule: $e')),
         );
       }
+    }
+  }
+
+  Future<void> _deleteSchedule(AppScheduleModel schedule) async {
+    if (!mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Schedule'),
+        content: Text('Delete schedule ${schedule.displayString()}?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      try {
+        setState(() => _isSaving = true);
+
+        final success = await AndroidPlatformService.deleteSchedule(schedule.id);
+
+        if (!mounted) return;
+
+        if (success) {
+          setState(() {
+            _schedules = _schedules.where((s) => s.id != schedule.id).toList();
+            _isSaving = false;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Schedule deleted')),
+          );
+        } else {
+          setState(() => _isSaving = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Failed to delete schedule')),
+          );
+        }
+      } catch (e) {
+        if (!mounted) return;
+        setState(() => _isSaving = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error deleting schedule: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _toggleSchedule(AppScheduleModel schedule) async {
+    final newEnabled = !schedule.enabled;
+    try {
+      final success = await AndroidPlatformService.toggleScheduleEnabled(
+        schedule.id,
+        newEnabled,
+      );
+
+      if (!mounted) return;
+
+      if (success) {
+        setState(() {
+          _schedules = _schedules.map((s) {
+            if (s.id == schedule.id) {
+              return s.copyWith(enabled: newEnabled);
+            }
+            return s;
+          }).toList();
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error toggling schedule: $e')),
+      );
     }
   }
 
@@ -398,44 +587,100 @@ class _RestrictionSettingsScreenState extends State<RestrictionSettingsScreen> {
                       ),
                     ),
 
-                    // --- Schedule Section ---
+                    // --- Schedules Section ---
                     Card(
                       margin: const EdgeInsets.symmetric(horizontal: 16),
-                      child: ListTile(
-                        leading: const Icon(Icons.schedule),
-                        title: const Text('Schedule'),
-                        subtitle: Text(
-                          _schedule.enabled
-                              ? _schedule.displayString()
-                              : 'Not configured',
-                        ),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (_schedule.enabled)
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 2,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Colors.orange.shade100,
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                child: const Text(
-                                  'ON',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.orange,
-                                    fontWeight: FontWeight.bold,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          ListTile(
+                            leading: const Icon(Icons.schedule),
+                            title: const Text('Schedules'),
+                            subtitle: Text(
+                              _schedules.isEmpty
+                                  ? 'No blocking schedules'
+                                  : '${_schedules.length} schedule${_schedules.length == 1 ? '' : 's'} configured',
+                            ),
+                          ),
+                          if (_schedules.isNotEmpty)
+                            ..._schedules.map((schedule) => Column(
+                              children: [
+                                const Divider(height: 1),
+                                ListTile(
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+                                  leading: Icon(
+                                    schedule.enabled ? Icons.access_time : Icons.access_time_filled_outlined,
+                                    color: schedule.enabled ? Colors.orange : Colors.grey,
+                                  ),
+                                  title: Text(
+                                    schedule.displayString(),
+                                    style: TextStyle(
+                                      decoration: schedule.enabled ? null : TextDecoration.lineThrough,
+                                      color: schedule.enabled ? null : Colors.grey,
+                                    ),
+                                  ),
+                                  subtitle: Text(
+                                    schedule.enabled ? 'Active' : 'Disabled',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: schedule.enabled ? Colors.green : Colors.grey,
+                                    ),
+                                  ),
+                                  trailing: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Switch(
+                                        value: schedule.enabled,
+                                        onChanged: (_) => _toggleSchedule(schedule),
+                                      ),
+                                      PopupMenuButton<String>(
+                                        onSelected: (value) {
+                                          if (value == 'edit') {
+                                            _editSchedule(schedule);
+                                          } else if (value == 'delete') {
+                                            _deleteSchedule(schedule);
+                                          }
+                                        },
+                                        itemBuilder: (context) => [
+                                          const PopupMenuItem(
+                                            value: 'edit',
+                                            child: Row(
+                                              children: [
+                                                Icon(Icons.edit, size: 20),
+                                                SizedBox(width: 8),
+                                                Text('Edit'),
+                                              ],
+                                            ),
+                                          ),
+                                          const PopupMenuItem(
+                                            value: 'delete',
+                                            child: Row(
+                                              children: [
+                                                Icon(Icons.delete, size: 20, color: Colors.red),
+                                                SizedBox(width: 8),
+                                                Text('Delete', style: TextStyle(color: Colors.red)),
+                                              ],
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
                                   ),
                                 ),
+                              ],
+                            )),
+                          Padding(
+                            padding: const EdgeInsets.all(8),
+                            child: SizedBox(
+                              width: double.infinity,
+                              child: TextButton.icon(
+                                onPressed: _addSchedule,
+                                icon: const Icon(Icons.add),
+                                label: const Text('Add Schedule'),
                               ),
-                            const SizedBox(width: 8),
-                            const Icon(Icons.chevron_right),
-                          ],
-                        ),
-                        onTap: _configureSchedule,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
 

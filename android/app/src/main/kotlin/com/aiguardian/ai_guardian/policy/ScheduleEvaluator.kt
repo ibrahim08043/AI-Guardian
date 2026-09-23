@@ -61,6 +61,17 @@ object ScheduleEvaluator {
     }
 
     /**
+     * Check if ANY enabled schedule in the list is currently active.
+     * Used by PolicyEngine for multi-schedule evaluation (OR logic).
+     *
+     * @param schedules List of restriction schedules to evaluate.
+     * @return true if at least one enabled schedule is currently active.
+     */
+    fun anyActiveSchedule(schedules: List<RestrictionSchedule>): Boolean {
+        return schedules.any { it.enabled && isWithinSchedule(it) }
+    }
+
+    /**
      * Get current time as minutes from midnight (0–1439).
      */
     fun currentMinutesFromMidnight(): Int {

@@ -99,7 +99,7 @@ class ForegroundMonitor(
 
         // Policy is ALLOW — check if schedule or limit could trigger BLOCK later
         val policy = findPolicy(packageName)
-        Log.d(TAG, "  [3] findPolicy($packageName): ${if (policy != null) "FOUND action=${policy.action} schedEnabled=${policy.scheduleEnabled} limitEnabled=${policy.dailyLimitEnabled}" else "NULL"}")
+        Log.d(TAG, "  [3] findPolicy($packageName): ${if (policy != null) "FOUND action=${policy.action} schedules=${policy.schedules.size} limitEnabled=${policy.dailyLimitEnabled}" else "NULL"}")
 
         if (policy == null || !policy.enabled) {
             Log.d(TAG, "  [4] No policy or disabled — no monitoring")
@@ -231,12 +231,15 @@ class ForegroundMonitor(
         val now = System.currentTimeMillis()
         var earliest: Long? = null
 
-        // Schedule boundary
-        if (policy.scheduleEnabled && policy.schedule != null) {
-            Log.d(TAG, "  calcBoundary: schedule start=${policy.schedule.startMinutes} end=${policy.schedule.endMinutes}")
-            val scheduleBoundary = calculateScheduleBoundary(policy.schedule, now)
+        // Schedule boundaries — check all enabled schedules
+        for (schedule in policy.schedules) {
+            if (!schedule.enabled) continue
+            Log.d(TAG, "  calcBoundary: schedule id=${schedule.id} start=${schedule.startMinutes} end=${schedule.endMinutes}")
+            val scheduleBoundary = calculateScheduleBoundary(schedule, now)
             if (scheduleBoundary != null) {
-                earliest = scheduleBoundary
+                if (earliest == null || scheduleBoundary < earliest) {
+                    earliest = scheduleBoundary
+                }
                 Log.d(TAG, "  calcBoundary: schedule boundary = $scheduleBoundary (in ${scheduleBoundary - now}ms)")
             }
         }
@@ -362,7 +365,7 @@ class ForegroundMonitor(
             monitoredPackage = null
             return
         }
-        Log.d(TAG, "  [B] Policy re-read: action=${policy.action} schedEnabled=${policy.scheduleEnabled} limitEnabled=${policy.dailyLimitEnabled}")
+        Log.d(TAG, "  [B] Policy re-read: action=${policy.action} schedules=${policy.schedules.size} limitEnabled=${policy.dailyLimitEnabled}")
 
         // Re-evaluate using the current engine (may have been updated since timer was scheduled)
         val result = policyEngine.evaluate(packageName)

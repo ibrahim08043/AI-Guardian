@@ -163,7 +163,7 @@ class PolicyEngineTest {
     }
 
     // -------------------------------------------------------------------------
-    // Phase C: Schedule evaluation
+    // Phase C: Schedule evaluation (multi-schedule API)
     // -------------------------------------------------------------------------
 
     @Test
@@ -176,8 +176,7 @@ class PolicyEngineTest {
         engine.setPolicy(Policy(
             packageName = "com.schedule.active",
             action = PolicyAction.ALLOW,
-            schedule = RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes),
-            scheduleEnabled = true,
+            schedules = listOf(RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes)),
         ))
 
         val result = engine.evaluate("com.schedule.active")
@@ -201,8 +200,7 @@ class PolicyEngineTest {
         engine.setPolicy(Policy(
             packageName = "com.schedule.inactive",
             action = PolicyAction.BLOCK,
-            schedule = RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes),
-            scheduleEnabled = true,
+            schedules = listOf(RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes)),
         ))
 
         val result = engine.evaluate("com.schedule.inactive")
@@ -215,10 +213,30 @@ class PolicyEngineTest {
         engine.setPolicy(Policy(
             packageName = "com.schedule.disabled",
             action = PolicyAction.BLOCK,
-            schedule = RestrictionSchedule(startMinutes = 0, endMinutes = 1439),
-            scheduleEnabled = false,
+            schedules = listOf(RestrictionSchedule(startMinutes = 0, endMinutes = 1439, enabled = false)),
         ))
         assertEquals(PolicyAction.BLOCK, engine.evaluate("com.schedule.disabled").action)
+    }
+
+    @Test
+    fun `multiple schedules - any active blocks`() {
+        val now = Calendar.getInstance()
+        val currentMinutes = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE)
+        val startMinutes = maxOf(0, currentMinutes - 60)
+        val endMinutes = minOf(1439, currentMinutes + 60)
+
+        engine.setPolicy(Policy(
+            packageName = "com.multi.sched",
+            action = PolicyAction.ALLOW,
+            schedules = listOf(
+                RestrictionSchedule(startMinutes = 0, endMinutes = 60),       // inactive
+                RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes), // active
+            ),
+        ))
+
+        val result = engine.evaluate("com.multi.sched")
+        assertEquals(PolicyAction.BLOCK, result.action)
+        assertEquals("schedule active", result.reason)
     }
 
     // -------------------------------------------------------------------------
@@ -289,8 +307,7 @@ class PolicyEngineTest {
         engine.setPolicy(Policy(
             packageName = "com.combined.schedule",
             action = PolicyAction.ALLOW,
-            schedule = RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes),
-            scheduleEnabled = true,
+            schedules = listOf(RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes)),
             dailyLimit = DailyLimit(limitMinutes = 30),
             dailyLimitEnabled = true,
         ))
@@ -317,8 +334,7 @@ class PolicyEngineTest {
         engine.setPolicy(Policy(
             packageName = "com.combined.limit",
             action = PolicyAction.ALLOW,
-            schedule = RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes),
-            scheduleEnabled = true,
+            schedules = listOf(RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes)),
             dailyLimit = DailyLimit(limitMinutes = 30),
             dailyLimitEnabled = true,
         ))
@@ -358,8 +374,7 @@ class PolicyEngineTest {
             packageName = "com.schedule.only",
             action = PolicyAction.ALLOW,
             enabled = true,
-            schedule = RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes),
-            scheduleEnabled = true,
+            schedules = listOf(RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes)),
         ))
         val result = engine.evaluate("com.schedule.only")
         assertEquals(PolicyAction.BLOCK, result.action)
@@ -402,11 +417,46 @@ class PolicyEngineTest {
             packageName = "com.block.plus.schedule",
             action = PolicyAction.BLOCK,
             enabled = true,
-            schedule = RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes),
-            scheduleEnabled = true,
+            schedules = listOf(RestrictionSchedule(startMinutes = startMinutes, endMinutes = endMinutes)),
         ))
         val result = engine.evaluate("com.block.plus.schedule")
         assertEquals(PolicyAction.BLOCK, result.action)
+    }
+
+    // -------------------------------------------------------------------------
+    // Cache behavior
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `setPolicy updates cache immediately`() {
+        // Add a policy — should be in cache and returned by evaluate
+        engine.setPolicy(Policy(packageName = "com.cached.app", action = PolicyAction.BLOCK))
+        assertEquals(PolicyAction.BLOCK, engine.evaluate("com.cached.app").action)
+
+        // Update — cache should reflect the change
+        engine.setPolicy(Policy(packageName = "com.cached.app", action = PolicyAction.ALLOW))
+        assertEquals(PolicyAction.ALLOW, engine.evaluate("com.cached.app").action)
+    }
+
+    @Test
+    fun `removePolicy invalidates cache`() {
+        engine.setPolicy(Policy(packageName = "com.rm.cache", action = PolicyAction.BLOCK))
+        assertEquals(PolicyAction.BLOCK, engine.evaluate("com.rm.cache").action)
+
+        engine.removePolicy("com.rm.cache")
+        assertEquals(PolicyAction.ALLOW, engine.evaluate("com.rm.cache").action)
+    }
+
+    @Test
+    fun `setPolicyEnabled updates cache`() {
+        engine.setPolicy(Policy(packageName = "com.toggle.cache", action = PolicyAction.BLOCK))
+        assertEquals(PolicyAction.BLOCK, engine.evaluate("com.toggle.cache").action)
+
+        engine.setPolicyEnabled("com.toggle.cache", false)
+        assertEquals(PolicyAction.ALLOW, engine.evaluate("com.toggle.cache").action)
+
+        engine.setPolicyEnabled("com.toggle.cache", true)
+        assertEquals(PolicyAction.BLOCK, engine.evaluate("com.toggle.cache").action)
     }
 
     // -------------------------------------------------------------------------

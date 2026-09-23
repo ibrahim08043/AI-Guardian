@@ -395,4 +395,91 @@ class ContentFilterEngineTest {
         val result = engine.evaluateText("say hello world now", "com.example.app")
         assertTrue(result.matched)
     }
+
+    // -------------------------------------------------------------------------
+    // Performance: 80+ rules
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `80 CONTAINS rules - matching rule found`() {
+        // Use unique phrases that don't overlap as substrings
+        val rules = (1..80).map { makeRule(id = it.toLong(), phrase = "block_${it}_xyz") }
+        engine.updateRules(rules)
+
+        // Match one of the rules — "block_50_xyz" won't match "block_5_xyz" because
+        // "block_5_xyz" is not a substring of "block_50_xyz"
+        val result = engine.evaluateText("this contains block_50_xyz in it", "com.example.app")
+        assertTrue(result.matched)
+    }
+
+    @Test
+    fun `80 CONTAINS rules - no match on unrelated text`() {
+        val rules = (1..80).map { makeRule(id = it.toLong(), phrase = "blocked_word_$it") }
+        engine.updateRules(rules)
+
+        val result = engine.evaluateText("this is completely innocent text", "com.example.app")
+        assertFalse(result.matched)
+    }
+
+    @Test
+    fun `80 mixed EXACT and CONTAINS rules`() {
+        val exactRules = (1..40).map { makeRule(id = it.toLong(), phrase = "exact_word_$it", matchMode = ContentFilterMatchMode.EXACT) }
+        val containsRules = (41..80).map { makeRule(id = it.toLong(), phrase = "contains_word_$it") }
+        engine.updateRules(exactRules + containsRules)
+
+        // Match an EXACT rule
+        val result1 = engine.evaluateText("exact_word_20", "com.example.app")
+        assertTrue(result1.matched)
+        assertEquals(20L, result1.ruleId)
+
+        // Match a CONTAINS rule
+        val result2 = engine.evaluateText("this has contains_word_60 inside", "com.example.app")
+        assertTrue(result2.matched)
+        assertEquals(60L, result2.ruleId)
+
+        // No match
+        val result3 = engine.evaluateText("nothing here matches", "com.example.app")
+        assertFalse(result3.matched)
+    }
+
+    @Test
+    fun `100 CONTAINS rules - performance check`() {
+        val rules = (1..100).map { makeRule(id = it.toLong(), phrase = "blocked_word_$it") }
+        engine.updateRules(rules)
+
+        val start = System.currentTimeMillis()
+        // Run 100 evaluations
+        repeat(100) {
+            engine.evaluateText("this is test text with blocked_word_50 inside", "com.example.app")
+        }
+        val elapsed = System.currentTimeMillis() - start
+
+        // 100 evaluations of 100 rules should complete well under 1 second
+        assertTrue("100 evaluations took ${elapsed}ms, expected < 1000ms", elapsed < 1000)
+    }
+
+    @Test
+    fun `repeated identical text - consistent results`() {
+        engine.updateRules(listOf(makeRule(phrase = "spam")))
+
+        repeat(50) {
+            val result = engine.evaluateText("this is spam content", "com.example.app")
+            assertTrue("Iteration $it: expected match", result.matched)
+            assertEquals("spam", result.matchedPhrase)
+        }
+    }
+
+    @Test
+    fun `unicode text matching`() {
+        engine.updateRules(listOf(makeRule(phrase = "日本語")))
+        val result = engine.evaluateText("this contains 日本語 text", "com.example.app")
+        assertTrue(result.matched)
+    }
+
+    @Test
+    fun `emoji in text does not break matching`() {
+        engine.updateRules(listOf(makeRule(phrase = "hello")))
+        val result = engine.evaluateText("👋 hello 🌍 world", "com.example.app")
+        assertTrue(result.matched)
+    }
 }

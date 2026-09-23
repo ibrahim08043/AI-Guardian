@@ -53,7 +53,9 @@ class PlatformChannelHandler(private val activity: Activity) {
     // Activity is a Context, so this works for all Context needs (DB, resources, etc.)
     private val context: Context = activity
 
-    private val dbHelper = PolicyDatabaseHelper(context)
+    private val dbHelper = PolicyDatabaseHelper(context).also {
+        Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG PLATFORM_HANDLER_INIT dbHelper=${it.hashCode()} dbName=${it.databaseName} dbPath=${it.readableDatabase.path}")
+    }
     private val policyRepository = PolicyRepository(dbHelper)
     private val domainRepository = DomainRepository(dbHelper)
     private val contentFilterRepository = ContentFilterRepository(dbHelper)
@@ -156,6 +158,61 @@ class PlatformChannelHandler(private val activity: Activity) {
                     saveSchedule(packageName, enabled, startMinutes, endMinutes, result)
                 } else {
                     result.error("INVALID_ARGUMENT", "packageName required", null)
+                }
+                true
+            }
+            "getAllSchedules" -> {
+                val packageName = call.argument<String>("packageName")
+                if (packageName != null) {
+                    getAllSchedules(packageName, result)
+                } else {
+                    result.error("INVALID_ARGUMENT", "packageName required", null)
+                }
+                true
+            }
+            "addSchedule" -> {
+                val packageName = call.argument<String>("packageName")
+                val startMinutes = call.argument<Int>("startMinutes")
+                val endMinutes = call.argument<Int>("endMinutes")
+                val enabled = call.argument<Boolean>("enabled") ?: true
+
+                if (packageName != null && startMinutes != null && endMinutes != null) {
+                    addSchedule(packageName, startMinutes, endMinutes, enabled, result)
+                } else {
+                    result.error("INVALID_ARGUMENT", "packageName, startMinutes, endMinutes required", null)
+                }
+                true
+            }
+            "updateSchedule" -> {
+                val id = call.argument<Number>("id")?.toLong()
+                val startMinutes = call.argument<Int>("startMinutes")
+                val endMinutes = call.argument<Int>("endMinutes")
+                val enabled = call.argument<Boolean>("enabled") ?: true
+
+                if (id != null && startMinutes != null && endMinutes != null) {
+                    updateSchedule(id, startMinutes, endMinutes, enabled, result)
+                } else {
+                    result.error("INVALID_ARGUMENT", "id, startMinutes, endMinutes required", null)
+                }
+                true
+            }
+            "deleteSchedule" -> {
+                val id = call.argument<Number>("id")?.toLong()
+                if (id != null) {
+                    deleteSchedule(id, result)
+                } else {
+                    result.error("INVALID_ARGUMENT", "id required", null)
+                }
+                true
+            }
+            "toggleScheduleEnabled" -> {
+                val id = call.argument<Number>("id")?.toLong()
+                val enabled = call.argument<Boolean>("enabled") ?: true
+
+                if (id != null) {
+                    toggleScheduleEnabled(id, enabled, result)
+                } else {
+                    result.error("INVALID_ARGUMENT", "id required", null)
                 }
                 true
             }
@@ -288,6 +345,7 @@ class PlatformChannelHandler(private val activity: Activity) {
             }
             // Phase 2B: Content filter methods
             "getAllContentFilterRules" -> {
+                Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_DISPATCH getAllContentFilterRules")
                 getAllContentFilterRules(result)
                 true
             }
@@ -295,6 +353,7 @@ class PlatformChannelHandler(private val activity: Activity) {
                 val phrase = call.argument<String>("phrase")
                 val matchMode = call.argument<String>("matchMode")
                 val enabled = call.argument<Boolean>("enabled") ?: true
+                Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_DISPATCH saveContentFilterRule phrase=$phrase matchMode=$matchMode enabled=$enabled")
                 if (phrase != null) {
                     saveContentFilterRule(phrase, matchMode, enabled, result)
                 } else {
@@ -303,10 +362,12 @@ class PlatformChannelHandler(private val activity: Activity) {
                 true
             }
             "updateContentFilterRule" -> {
-                val id = call.argument<Long>("id")
+                val rawId = call.arguments?.let { (it as? Map<*, *>)?.get("id") }
+                val id = call.argument<Number>("id")?.toLong()
                 val phrase = call.argument<String>("phrase")
                 val matchMode = call.argument<String>("matchMode")
                 val enabled = call.argument<Boolean>("enabled") ?: true
+                Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_DISPATCH updateContentFilterRule rawId=$rawId rawIdType=${rawId?.javaClass?.simpleName} id=$id phrase=$phrase")
                 if (id != null && phrase != null) {
                     updateContentFilterRule(id, phrase, matchMode, enabled, result)
                 } else {
@@ -315,20 +376,27 @@ class PlatformChannelHandler(private val activity: Activity) {
                 true
             }
             "deleteContentFilterRule" -> {
-                val id = call.argument<Long>("id")
+                val rawId = call.arguments?.let { (it as? Map<*, *>)?.get("id") }
+                val id = call.argument<Number>("id")?.toLong()
+                Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_DISPATCH deleteContentFilterRule rawId=$rawId rawIdType=${rawId?.javaClass?.simpleName} id=$id")
                 if (id != null) {
                     deleteContentFilterRule(id, result)
                 } else {
+                    Log.e(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_DISPATCH deleteContentFilterRule ID_NULL rawId=$rawId rawIdType=${rawId?.javaClass?.simpleName}")
                     result.error("INVALID_ARGUMENT", "id required", null)
                 }
                 true
             }
             "setContentFilterRuleEnabled" -> {
-                val id = call.argument<Long>("id")
+                val rawId = call.arguments?.let { (it as? Map<*, *>)?.get("id") }
+                val rawEnabled = call.arguments?.let { (it as? Map<*, *>)?.get("enabled") }
+                val id = call.argument<Number>("id")?.toLong()
                 val enabled = call.argument<Boolean>("enabled") ?: true
+                Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_DISPATCH setContentFilterRuleEnabled rawId=$rawId rawIdType=${rawId?.javaClass?.simpleName} rawEnabled=$rawEnabled rawEnabledType=${rawEnabled?.javaClass?.simpleName} id=$id enabled=$enabled")
                 if (id != null) {
                     setContentFilterRuleEnabled(id, enabled, result)
                 } else {
+                    Log.e(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_DISPATCH setContentFilterRuleEnabled ID_NULL rawId=$rawId")
                     result.error("INVALID_ARGUMENT", "id required", null)
                 }
                 true
@@ -340,6 +408,10 @@ class PlatformChannelHandler(private val activity: Activity) {
             }
             "isMasterContentFilterEnabled" -> {
                 isMasterContentFilterEnabled(result)
+                true
+            }
+            "refreshBlockedDomains" -> {
+                refreshBlockedDomains(result)
                 true
             }
             else -> false
@@ -579,8 +651,6 @@ class PlatformChannelHandler(private val activity: Activity) {
             }
 
             // Ensure a policy row exists before updating schedule.
-            // If no policy exists, create one with action=ALLOW so the schedule
-            // is the active restriction (block only during scheduled window).
             ensurePolicyExists(packageName)
 
             val success = policyRepository.updateSchedule(packageName, enabled, startMinutes, endMinutes)
@@ -594,6 +664,116 @@ class PlatformChannelHandler(private val activity: Activity) {
         } catch (e: Exception) {
             Log.e(TAG, "saveSchedule failed: ${e.message}")
             result.error("SAVE_SCHEDULE_ERROR", e.message, null)
+        }
+    }
+
+    private fun getAllSchedules(packageName: String, result: MethodChannel.Result) {
+        try {
+            val schedules = policyRepository.getSchedulesForPackage(packageName)
+            val scheduleMaps = schedules.map { s ->
+                mapOf(
+                    "id" to s.id,
+                    "startMinutes" to s.startMinutes,
+                    "endMinutes" to s.endMinutes,
+                    "enabled" to s.enabled,
+                )
+            }
+            Log.d(TAG, "getAllSchedules: $packageName = ${scheduleMaps.size} schedules")
+            result.success(scheduleMaps)
+        } catch (e: Exception) {
+            Log.e(TAG, "getAllSchedules failed: ${e.message}")
+            result.error("GET_SCHEDULES_ERROR", e.message, null)
+        }
+    }
+
+    private fun addSchedule(
+        packageName: String,
+        startMinutes: Int,
+        endMinutes: Int,
+        enabled: Boolean,
+        result: MethodChannel.Result,
+    ) {
+        try {
+            // Validate ranges
+            if (startMinutes !in 0..1439 || endMinutes !in 0..1439) {
+                result.error("INVALID_SCHEDULE", "Minutes must be 0-1439", null)
+                return
+            }
+            // Validate the schedule can be constructed
+            RestrictionSchedule.fromMinutes(startMinutes, endMinutes)
+
+            // Ensure a policy row exists
+            ensurePolicyExists(packageName)
+
+            val id = policyRepository.saveSchedule(packageName, startMinutes, endMinutes, enabled)
+            if (id > 0) {
+                Log.i(TAG, "addSchedule: $packageName id=$id $startMinutes→$endMinutes")
+                notifyPolicyChanged(packageName)
+                result.success(mapOf("success" to true, "id" to id))
+            } else {
+                result.error("ADD_SCHEDULE_ERROR", "Database insert failed", null)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "addSchedule failed: ${e.message}")
+            result.error("ADD_SCHEDULE_ERROR", e.message, null)
+        }
+    }
+
+    private fun updateSchedule(
+        id: Long,
+        startMinutes: Int,
+        endMinutes: Int,
+        enabled: Boolean,
+        result: MethodChannel.Result,
+    ) {
+        try {
+            if (startMinutes !in 0..1439 || endMinutes !in 0..1439) {
+                result.error("INVALID_SCHEDULE", "Minutes must be 0-1439", null)
+                return
+            }
+            RestrictionSchedule.fromMinutes(startMinutes, endMinutes)
+
+            val success = policyRepository.updateScheduleById(id, startMinutes, endMinutes, enabled)
+            if (success) {
+                Log.i(TAG, "updateSchedule: id=$id $startMinutes→$endMinutes enabled=$enabled")
+                // Notify all policies (we don't know which package from just the schedule ID)
+                result.success(mapOf("success" to true))
+            } else {
+                result.error("UPDATE_SCHEDULE_ERROR", "Database update failed", null)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "updateSchedule failed: ${e.message}")
+            result.error("UPDATE_SCHEDULE_ERROR", e.message, null)
+        }
+    }
+
+    private fun deleteSchedule(id: Long, result: MethodChannel.Result) {
+        try {
+            val success = policyRepository.deleteScheduleById(id)
+            if (success) {
+                Log.i(TAG, "deleteSchedule: id=$id")
+                result.success(mapOf("success" to true))
+            } else {
+                result.error("DELETE_SCHEDULE_ERROR", "Database delete failed", null)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "deleteSchedule failed: ${e.message}")
+            result.error("DELETE_SCHEDULE_ERROR", e.message, null)
+        }
+    }
+
+    private fun toggleScheduleEnabled(id: Long, enabled: Boolean, result: MethodChannel.Result) {
+        try {
+            val success = policyRepository.toggleScheduleEnabled(id, enabled)
+            if (success) {
+                Log.i(TAG, "toggleScheduleEnabled: id=$id enabled=$enabled")
+                result.success(mapOf("success" to true))
+            } else {
+                result.error("TOGGLE_SCHEDULE_ERROR", "Database update failed", null)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "toggleScheduleEnabled failed: ${e.message}")
+            result.error("TOGGLE_SCHEDULE_ERROR", e.message, null)
         }
     }
 
@@ -676,17 +856,12 @@ class PlatformChannelHandler(private val activity: Activity) {
     }
 
     private fun buildFullPolicyMap(policy: Policy): Map<String, Any?> {
-        val scheduleMap = if (policy.schedule != null) {
+        val schedulesList = policy.schedules.map { s ->
             mapOf(
-                "enabled" to policy.scheduleEnabled,
-                "startMinutes" to policy.schedule.startMinutes,
-                "endMinutes" to policy.schedule.endMinutes,
-            )
-        } else {
-            mapOf(
-                "enabled" to policy.scheduleEnabled,
-                "startMinutes" to null,
-                "endMinutes" to null,
+                "id" to s.id,
+                "startMinutes" to s.startMinutes,
+                "endMinutes" to s.endMinutes,
+                "enabled" to s.enabled,
             )
         }
 
@@ -706,7 +881,7 @@ class PlatformChannelHandler(private val activity: Activity) {
             "packageName" to policy.packageName,
             "action" to policy.action.name,
             "enabled" to policy.enabled,
-            "schedule" to scheduleMap,
+            "schedules" to schedulesList,
             "dailyLimit" to dailyLimitMap,
         )
     }
@@ -801,8 +976,9 @@ class PlatformChannelHandler(private val activity: Activity) {
 
             val apps = mutableListOf<Map<String, Any>>()
             for (app in packages) {
-                // Skip system apps (flagged with FLAG_SYSTEM)
-                if ((app.flags and ApplicationInfo.FLAG_SYSTEM) != 0) {
+                // Skip pure system apps but show updated system apps (e.g., Google, YouTube updated via Play Store)
+                if ((app.flags and ApplicationInfo.FLAG_SYSTEM) != 0 &&
+                    (app.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) == 0) {
                     continue
                 }
 
@@ -1042,7 +1218,9 @@ class PlatformChannelHandler(private val activity: Activity) {
     private fun getAllContentFilterRules(result: MethodChannel.Result) {
         try {
             val rules = contentFilterRepository.getAllRules()
+            Log.d(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_LOAD_RULES count=${rules.size}")
             val ruleMaps = rules.map { rule ->
+                Log.d(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_RULE id=${rule.id} idType=${rule.id::class.java.simpleName} phrase=${rule.phrase} enabled=${rule.enabled} matchMode=${rule.matchMode}")
                 mapOf(
                     "id" to rule.id,
                     "phrase" to rule.phrase,
@@ -1052,10 +1230,9 @@ class PlatformChannelHandler(private val activity: Activity) {
                     "updatedAt" to rule.updatedAt,
                 )
             }
-            Log.d(TAG, "getAllContentFilterRules: returning ${ruleMaps.size} rules")
             result.success(ruleMaps)
         } catch (e: Exception) {
-            Log.e(TAG, "getAllContentFilterRules failed: ${e.message}")
+            Log.e(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_LOAD_RULES_FAILED error=${e.message}")
             result.error("GET_FILTER_RULES_ERROR", e.message, null)
         }
     }
@@ -1066,6 +1243,7 @@ class PlatformChannelHandler(private val activity: Activity) {
         enabled: Boolean,
         result: MethodChannel.Result,
     ) {
+        Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_SAVE_RECEIVED phrase=$phrase matchMode=$matchModeStr enabled=$enabled")
         try {
             val normalized = ContentFilterRule.normalizePhrase(phrase)
             if (normalized == null) {
@@ -1087,15 +1265,15 @@ class PlatformChannelHandler(private val activity: Activity) {
             )
 
             val id = contentFilterRepository.saveRule(rule)
+            Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_SAVE_DB_RESULT phrase=$normalized id=$id")
             if (id > 0) {
-                Log.i(TAG, "saveContentFilterRule: saved '$normalized' (id=$id)")
                 refreshContentFilterRules()
                 result.success(mapOf("success" to true, "id" to id))
             } else {
                 result.error("SAVE_FILTER_RULE_ERROR", "Database save failed", null)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "saveContentFilterRule failed: ${e.message}")
+            Log.e(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_SAVE_FAILED phrase=$phrase error=${e.message}")
             result.error("SAVE_FILTER_RULE_ERROR", e.message, null)
         }
     }
@@ -1137,33 +1315,44 @@ class PlatformChannelHandler(private val activity: Activity) {
     }
 
     private fun deleteContentFilterRule(id: Long, result: MethodChannel.Result) {
+        Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_DELETE_RECEIVED id=$id idType=${id::class.java.simpleName}")
         try {
+            // Check if rule exists first
+            val existingRule = contentFilterRepository.getRule(id)
+            Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_DELETE_EXISTS id=$id exists=${existingRule != null} phrase=${existingRule?.phrase}")
             val success = contentFilterRepository.deleteRule(id)
+            Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_DELETE_DB_RESULT id=$id success=$success")
             if (success) {
-                Log.i(TAG, "deleteContentFilterRule: deleted id=$id")
+                // Verify deletion
+                val verifyRule = contentFilterRepository.getRule(id)
+                Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_DELETE_VERIFY id=$id stillExists=${verifyRule != null}")
                 refreshContentFilterRules()
                 result.success(mapOf("success" to true))
             } else {
-                result.error("DELETE_FILTER_RULE_ERROR", "Database delete failed", null)
+                result.error("DELETE_FILTER_RULE_ERROR", "Database delete failed: rowsAffected=0 for id=$id", null)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "deleteContentFilterRule failed: ${e.message}")
+            Log.e(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_DELETE_FAILED id=$id error=${e.message}")
             result.error("DELETE_FILTER_RULE_ERROR", e.message, null)
         }
     }
 
     private fun setContentFilterRuleEnabled(id: Long, enabled: Boolean, result: MethodChannel.Result) {
+        Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_TOGGLE_RECEIVED id=$id enabled=$enabled idType=${id::class.java.simpleName}")
         try {
             val success = contentFilterRepository.setRuleEnabled(id, enabled)
+            Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_TOGGLE_DB_RESULT id=$id success=$success")
             if (success) {
-                Log.i(TAG, "setContentFilterRuleEnabled: id=$id enabled=$enabled")
+                // Verify by reading back
+                val verifyRule = contentFilterRepository.getRule(id)
+                Log.i(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_TOGGLE_VERIFY id=$id verifiedEnabled=${verifyRule?.enabled}")
                 refreshContentFilterRules()
                 result.success(mapOf("success" to true))
             } else {
-                result.error("UPDATE_FILTER_RULE_ERROR", "Database update failed", null)
+                result.error("UPDATE_FILTER_RULE_ERROR", "Database update failed: rowsAffected=0 for id=$id", null)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "setContentFilterRuleEnabled failed: ${e.message}")
+            Log.e(TAG, "AI_GUARDIAN_CONTENT_FILTER_DEBUG NATIVE_TOGGLE_FAILED id=$id error=${e.message}")
             result.error("UPDATE_FILTER_RULE_ERROR", e.message, null)
         }
     }
@@ -1206,6 +1395,21 @@ class PlatformChannelHandler(private val activity: Activity) {
             AIGuardianAccessibilityService.instance?.refreshContentFilterRules()
         } catch (e: Exception) {
             Log.w(TAG, "Failed to refresh content filter rules: ${e.message}")
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Phase 3B: Website blocking (AccessibilityService-based)
+    // ─────────────────────────────────────────────────────────────
+
+    private fun refreshBlockedDomains(result: MethodChannel.Result) {
+        try {
+            AIGuardianAccessibilityService.instance?.refreshBlockedDomains()
+            Log.i(TAG, "refreshBlockedDomains called")
+            result.success(mapOf("success" to true))
+        } catch (e: Exception) {
+            Log.e(TAG, "refreshBlockedDomains failed: ${e.message}")
+            result.error("REFRESH_ERROR", e.message, null)
         }
     }
 

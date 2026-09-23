@@ -51,17 +51,39 @@ class ContentFilterEngine {
     @Volatile
     private var enabledRules: List<ContentFilterRule> = emptyList()
 
+    /** Pre-normalized EXACT phrases for O(1) HashSet lookup. */
+    @Volatile
+    private var exactPhrases: Set<String> = emptySet()
+
+    /** Pre-normalized CONTAINS phrases for scanning. */
+    @Volatile
+    private var containsPhrases: List<String> = emptyList()
+
     /** Master switch — when false, all matching is bypassed. */
     @Volatile
     private var masterEnabled: Boolean = true
 
     /**
      * Update the set of enabled rules.
+     * Pre-normalizes phrases into exact/contains buckets for fast matching.
      * Called by the AccessibilityService when rules change in the database.
      */
     fun updateRules(rules: List<ContentFilterRule>) {
         enabledRules = rules.filter { it.enabled }
-        Log.d(TAG, "Updated rules: ${enabledRules.size} enabled")
+        // Pre-normalize into lookup structures
+        val exact = mutableSetOf<String>()
+        val contains = mutableListOf<String>()
+        for (rule in enabledRules) {
+            val phrase = rule.phrase
+            if (phrase.isEmpty()) continue
+            when (rule.matchMode) {
+                ContentFilterMatchMode.EXACT -> exact.add(phrase)
+                ContentFilterMatchMode.CONTAINS -> contains.add(phrase)
+            }
+        }
+        exactPhrases = exact
+        containsPhrases = contains
+        Log.d(TAG, "Updated rules: ${enabledRules.size} enabled (${exact.size} exact, ${contains.size} contains)")
     }
 
     /**
@@ -122,18 +144,25 @@ class ContentFilterEngine {
         // Normalize text once for comparison
         val normalizedText = textToCheck.trim().lowercase()
 
-        // Check each rule — first match wins
-        for (rule in enabledRules) {
-            val phrase = rule.phrase // Already normalized (lowercase, trimmed) in repository
-            if (phrase.isEmpty()) continue
+        // 1. Fast O(1) exact match via HashSet
+        if (normalizedText in exactPhrases) {
+            val rule = enabledRules.first { it.matchMode == ContentFilterMatchMode.EXACT && it.phrase == normalizedText }
+            Log.i(TAG, "Rule matched: '${rule.phrase}' (EXACT) in text from $packageName")
+            return ContentFilterResult(
+                matched = true,
+                matchedPhrase = rule.phrase,
+                matchMode = rule.matchMode,
+                ruleId = rule.id,
+                packageName = packageName.orEmpty(),
+                reason = "rule matched",
+            )
+        }
 
-            val matched = when (rule.matchMode) {
-                ContentFilterMatchMode.CONTAINS -> normalizedText.contains(phrase)
-                ContentFilterMatchMode.EXACT -> normalizedText == phrase
-            }
-
-            if (matched) {
-                Log.i(TAG, "Rule matched: '${rule.phrase}' (${rule.matchMode}) in text from $packageName")
+        // 2. Scan CONTAINS phrases
+        for (phrase in containsPhrases) {
+            if (normalizedText.contains(phrase)) {
+                val rule = enabledRules.first { it.matchMode == ContentFilterMatchMode.CONTAINS && it.phrase == phrase }
+                Log.i(TAG, "Rule matched: '${rule.phrase}' (CONTAINS) in text from $packageName")
                 return ContentFilterResult(
                     matched = true,
                     matchedPhrase = rule.phrase,

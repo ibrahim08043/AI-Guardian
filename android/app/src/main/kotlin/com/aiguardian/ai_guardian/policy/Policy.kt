@@ -24,11 +24,8 @@ data class Policy(
 
     // --- Phase C: Smart Restriction Rules ---
 
-    /** Optional time-based blocking schedule. null = no schedule restriction. */
-    val schedule: RestrictionSchedule? = null,
-
-    /** Whether the schedule restriction is enabled. */
-    val scheduleEnabled: Boolean = false,
+    /** List of time-based blocking schedules. Any enabled active schedule blocks the app. */
+    val schedules: List<RestrictionSchedule> = emptyList(),
 
     /** Optional daily usage limit. null = no usage limit. */
     val dailyLimit: DailyLimit? = null,

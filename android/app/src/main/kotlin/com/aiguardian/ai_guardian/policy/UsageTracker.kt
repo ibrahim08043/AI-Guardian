@@ -40,6 +40,14 @@ open class UsageTracker(private val repository: PolicyRepository?) {
     @Volatile
     private var activeStartTime: Long = 0L
 
+    // ── Usage cache (avoids DB queries on every evaluate() call) ──────────
+    /** Cached date for which usage was loaded. */
+    @Volatile private var usageCacheDate: String = ""
+    /** Cached package for which usage was loaded. */
+    @Volatile private var usageCachePackage: String = ""
+    /** Cached total usage from database (ms) for the package on the cached date. */
+    @Volatile private var usageCacheDbMs: Long = 0L
+
     /**
      * Start tracking a new foreground session.
      *
@@ -96,6 +104,8 @@ open class UsageTracker(private val repository: PolicyRepository?) {
                 date = date,
             )
             Log.d(TAG, "Session ended for $packageName: ${durationMs}ms on $date")
+            // Invalidate usage cache so next query reads fresh data
+            usageCacheDate = ""
         } catch (e: Exception) {
             Log.e(TAG, "Failed to save session for $packageName: ${e.message}")
         }
@@ -117,26 +127,35 @@ open class UsageTracker(private val repository: PolicyRepository?) {
         if (packageName.isBlank()) return 0L
 
         val today = todayDate()
-        var totalMs = 0L
+        var dbMs: Long
 
-        try {
-            // Sum completed sessions from database
-            val sessions = repository?.getUsageSessions(packageName, today)
-            if (sessions != null) {
-                for (session in sessions) {
-                    totalMs += session.durationMs
+        // Check cache — avoids DB query on repeated calls for same package
+        if (today == usageCacheDate && packageName == usageCachePackage) {
+            dbMs = usageCacheDbMs
+        } else {
+            dbMs = 0L
+            try {
+                val sessions = repository?.getUsageSessions(packageName, today)
+                if (sessions != null) {
+                    for (session in sessions) {
+                        dbMs += session.durationMs
+                    }
                 }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to get usage for $packageName: ${e.message}")
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to get usage for $packageName: ${e.message}")
+            // Update cache
+            usageCacheDate = today
+            usageCachePackage = packageName
+            usageCacheDbMs = dbMs
         }
 
         // Add current active session if it's for this package
         if (activePackage == packageName && activeStartTime > 0) {
-            totalMs += System.currentTimeMillis() - activeStartTime
+            dbMs += System.currentTimeMillis() - activeStartTime
         }
 
-        return totalMs
+        return dbMs
     }
 
     /**

@@ -13,6 +13,12 @@ data class DomainPolicy(
     val updatedAt: Long = System.currentTimeMillis(),
 ) {
     companion object {
+        /** Pre-compiled regex for stripping http:// or https:// protocol prefix. */
+        private val REGEX_PROTOCOL = Regex("^https?://", RegexOption.IGNORE_CASE)
+
+        /** Pre-compiled regex for validating individual DNS labels (RFC-compliant). */
+        private val REGEX_LABEL = Regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+
         /**
          * Normalize a domain input:
          * - Lowercase
@@ -29,7 +35,7 @@ data class DomainPolicy(
             if (domain.isEmpty()) return null
 
             // Remove protocol
-            domain = domain.replace(Regex("^https?://", RegexOption.IGNORE_CASE), "")
+            domain = domain.replace(REGEX_PROTOCOL, "")
 
             // Remove path, query, fragment
             val slashIndex = domain.indexOf('/')
@@ -66,7 +72,7 @@ data class DomainPolicy(
             // Basic label validation
             val labels = domain.split(".")
             if (labels.any { it.isEmpty() || it.length > 63 }) return null
-            if (labels.any { !it.matches(Regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")) }) return null
+            if (labels.any { !it.matches(REGEX_LABEL) }) return null
 
             // Must have at least 2 labels (e.g., "example.com")
             if (labels.size < 2) return null
