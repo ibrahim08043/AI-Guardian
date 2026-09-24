@@ -10,6 +10,7 @@ import com.aiguardian.ai_guardian.contentfilter.ContentFilterEngine
 import com.aiguardian.ai_guardian.contentfilter.ContentFilterRepository
 import com.aiguardian.ai_guardian.enforcement.BlockActivity
 import com.aiguardian.ai_guardian.enforcement.UninstallGuardActivity
+import com.aiguardian.ai_guardian.enforcement.SettingsAccessibilityGuardActivity
 import com.aiguardian.ai_guardian.enforcement.EnforcementManager
 import com.aiguardian.ai_guardian.policy.DomainPolicy
 import com.aiguardian.ai_guardian.policy.ForegroundMonitor
@@ -100,6 +101,22 @@ class AIGuardianAccessibilityService : AccessibilityService() {
 
         /** Maximum node depth for web diagnostic traversal. */
         private const val WEB_DIAG_MAX_NODE_DEPTH = 5
+
+        // ── Settings accessibility guard constants ────────────────────────────
+        /** Log tag for Settings accessibility diagnostic output. */
+        private const val SETTINGS_DIAG_TAG = "AI_GUARDIAN_ACCESSIBILITY_SETTINGS_DIAG"
+
+        /** Log tag for Settings accessibility guard actions. */
+        private const val SETTINGS_GUARD_TAG = "AI_GUARDIAN_SETTINGS_GUARD"
+
+        /** Maximum diagnostic events for Settings accessibility logging. */
+        private const val SETTINGS_DIAG_MAX_EVENTS = 30
+
+        /** Cooldown after guard action to prevent repeated triggering (ms). */
+        private const val SETTINGS_GUARD_COOLDOWN_MS = 5000L
+
+        /** Maximum character length for Settings diagnostic window summary. */
+        private const val SETTINGS_DIAG_FLATTEN_MAX_CHARS = 1200
 
         // ── Web block constants ──────────────────────────────────────────────
         /** Log tag for website blocking actions. */
@@ -204,6 +221,19 @@ class AIGuardianAccessibilityService : AccessibilityService() {
     /** Last package seen in browser window — used to detect page changes. */
     @Volatile
     private var lastBrowserPackage: String? = null
+
+    // ── Settings accessibility guard state ──────────────────────────────────
+    /** Diagnostic event counter for Settings accessibility diagnostics. */
+    @Volatile
+    private var settingsDiagEventCount = 0
+
+    /** Whether the settings accessibility guard is currently active (password gate showing). */
+    @Volatile
+    private var settingsAccessibilityGuardActive = false
+
+    /** Timestamp of last settings guard trigger — enforces cooldown to prevent loops. */
+    @Volatile
+    private var lastSettingsGuardTriggerTime = 0L
 
     // ── Website blocking state ───────────────────────────────────────────────
     /** Normalized blocked domains loaded from DomainRepository. */
@@ -350,6 +380,20 @@ class AIGuardianAccessibilityService : AccessibilityService() {
             checkUninstallGuard(event)
         } catch (e: Exception) {
             Log.e(TAG, "AI_GUARDIAN_SERVICE_ERROR: uninstall guard: ${e.javaClass.simpleName}: ${e.message}")
+        }
+
+        // ── SETTINGS ACCESSIBILITY GUARD: check for AI Guardian disable attempts ──
+        try {
+            checkSettingsAccessibilityGuard(event)
+        } catch (e: Exception) {
+            Log.e(TAG, "AI_GUARDIAN_SERVICE_ERROR: settings a11y guard: ${e.javaClass.simpleName}: ${e.message}")
+        }
+
+        // ── SETTINGS A11Y DIAGNOSTIC: log Settings events for screen discovery ──
+        try {
+            logSettingsAccessibilityDiagnostic(event)
+        } catch (e: Exception) {
+            Log.e(TAG, "AI_GUARDIAN_SERVICE_ERROR: settings a11y diag: ${e.javaClass.simpleName}: ${e.message}")
         }
 
         // ── WEB DIAGNOSTIC: log browser events to discover URL exposure ──
@@ -779,6 +823,354 @@ class AIGuardianAccessibilityService : AccessibilityService() {
     fun clearUninstallGuard() {
         uninstallGuardActive = false
         Log.i(GUARD_TAG, "AI_GUARDIAN_UNINSTALL_GUARD: GUARD_CLEARED")
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    //  SETTINGS ACCESSIBILITY GUARD (detection + password gate)
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Check whether the current accessibility event represents the user
+     * navigating to AI Guardian's AccessibilityService details page in
+     * Android Settings and attempting to disable it.
+     *
+     * Detection targets the specific Settings screen where AI Guardian's
+     * AccessibilityService can be managed (enabled/disabled). This is a
+     * SURGICAL check — only this specific page is protected.
+     *
+     * Uses multi-signal detection (same pattern as uninstall guard):
+     * - Settings package
+     * - AI Guardian name in visible text
+     * - Accessibility-related class/activity
+     * - Toggle/switch node present
+     *
+     * Requires ≥2 signals for positive detection.
+     */
+    private fun checkSettingsAccessibilityGuard(event: AccessibilityEvent) {
+        // Skip if guard is already active (prevent loops)
+        if (settingsAccessibilityGuardActive) return
+
+        // Skip AI Guardian's own events
+        val packageName = event.packageName?.toString() ?: return
+        if (packageName == OWN_PACKAGE) return
+
+        // Check cooldown
+        val now = System.currentTimeMillis()
+        if (now - lastSettingsGuardTriggerTime < SETTINGS_GUARD_COOLDOWN_MS) {
+            Log.d(SETTINGS_GUARD_TAG, "COOLDOWN (${now - lastSettingsGuardTriggerTime}ms < ${SETTINGS_GUARD_COOLDOWN_MS}ms)")
+            return
+        }
+
+        // Only process events from Settings-related packages
+        if (!isSettingsPackage(packageName)) return
+
+        // Only process window state changes (screen navigation)
+        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+
+        // Detect AI Guardian accessibility details page
+        if (detectAiGuardianAccessibilityDetailsPage(event, packageName)) {
+            Log.w(SETTINGS_GUARD_TAG, "AI_GUARDIAN_SETTINGS_ACCESSIBILITY_GUARD: DETECTED")
+            triggerSettingsAccessibilityGuard()
+        }
+    }
+
+    /**
+     * Check if the package is an Android/Samsung Settings package.
+     */
+    private fun isSettingsPackage(packageName: String): Boolean {
+        return packageName == "com.android.settings" ||
+            packageName == "com.sec.android.app.safetyassistance" ||
+            packageName == "com.samsung.android.settings" ||
+            packageName.contains("settings", ignoreCase = true)
+    }
+
+    /**
+     * Detect whether the current window represents AI Guardian's
+     * AccessibilityService details/management page in Settings.
+     *
+     * DETECTION RULE (narrow — requires AI Guardian identity):
+     *
+     *   hasAiGuardianName == true   (MANDATORY — the screen must mention AI Guardian)
+     *   AND
+     *   (hasA11yClass OR hasToggleNode)   (at least one accessibility context signal)
+     *
+     * Rationale: A generic Settings page with a toggle must NEVER trigger the guard.
+     * Only a page that explicitly identifies as AI Guardian's accessibility page
+     * is protected.
+     */
+    private fun detectAiGuardianAccessibilityDetailsPage(
+        event: AccessibilityEvent,
+        packageName: String,
+    ): Boolean {
+        // Collect visible text from multiple sources
+        val eventText = event.text?.joinToString(" ") { it?.toString() ?: "" } ?: ""
+        val contentDesc = event.contentDescription?.toString() ?: ""
+        val className = event.className?.toString() ?: ""
+
+        // Get flattened window text summary
+        val windowTextSummary = try {
+            getSettingsDiagWindowSummary()
+        } catch (_: Exception) {
+            "(error)"
+        }
+
+        val allVisibleText = "$eventText $contentDesc $windowTextSummary"
+
+        // MANDATORY: "AI Guardian" text visible — this is the identity signal.
+        // Without this, the screen is NOT about AI Guardian and must NOT be protected.
+        val hasAiGuardianName = allVisibleText.contains("AI Guardian", ignoreCase = true) ||
+            allVisibleText.contains("aiguardian", ignoreCase = true) ||
+            allVisibleText.contains("ai_guardian", ignoreCase = true)
+
+        // If AI Guardian name is not visible, this is NOT the AI Guardian page.
+        if (!hasAiGuardianName) {
+            return false
+        }
+
+        // AI Guardian name IS visible — now confirm accessibility context.
+        // Signal A: Accessibility-related class/activity name
+        val a11yKeywords = listOf(
+            "accessibility", "accessibilityservice", "accessibility_settings",
+            "accessibility details", "accessibility service"
+        )
+        val allClassText = "$className".lowercase()
+        val hasA11yClass = a11yKeywords.any { allClassText.contains(it) }
+
+        // Signal B: Toggle/switch node present (the enable/disable control)
+        var hasToggleNode = false
+        try {
+            val root = rootInActiveWindow
+            if (root != null) {
+                hasToggleNode = findToggleNode(root, 0)
+                root.recycle()
+            }
+        } catch (_: Exception) { /* unavailable */ }
+
+        val hasA11yContext = hasA11yClass || hasToggleNode
+
+        // Log detection result
+        Log.i(SETTINGS_DIAG_TAG, "SETTINGS_A11Y_DETECT: " +
+            "aiGuardian=$hasAiGuardianName a11yClass=$hasA11yClass toggle=$hasToggleNode " +
+            "context=$hasA11yContext pkg=$packageName cls=$className")
+
+        // FINAL: AI Guardian name MANDATORY + accessibility context
+        return hasAiGuardianName && hasA11yContext
+    }
+
+    /**
+     * Recursively search the node tree for a Switch or CheckBox widget,
+     * which indicates the AccessibilityService enable/disable toggle.
+     */
+    private fun findToggleNode(node: AccessibilityNodeInfo?, depth: Int): Boolean {
+        if (node == null || depth > 10) return false
+
+        val className = node.className?.toString()?.lowercase() ?: ""
+        val isToggle = className.contains("switch") || className.contains("checkbox") ||
+            className.contains("toggle")
+
+        if (isToggle) return true
+
+        val childCount = node.childCount
+        for (i in 0 until childCount) {
+            try {
+                if (findToggleNode(node.getChild(i), depth + 1)) return true
+            } catch (_: Exception) { /* skip */ }
+        }
+
+        return false
+    }
+
+    /**
+     * Trigger the settings accessibility guard: show the password protection
+     * gate ON TOP of the current Settings screen.
+     *
+     * IMPORTANT: We do NOT call GLOBAL_ACTION_BACK here.
+     * The BACK action was destroying the target Settings details screen,
+     * causing the user to be returned to the Installed apps list instead
+     * of the AI Guardian toggle page after authentication.
+     *
+     * Instead, we show the guard activity on top. The underlying Settings
+     * task (with the target details screen) remains in its current state.
+     * When the guard finishes, the target screen is revealed.
+     *
+     * Steps:
+     * 1. Set guard active (prevent re-triggering)
+     * 2. Log the detection
+     * 3. Launch the SettingsAccessibilityGuardActivity password gate
+     *    (NO BACK action — the target screen stays underneath)
+     */
+    private fun triggerSettingsAccessibilityGuard() {
+        val now = System.currentTimeMillis()
+
+        // Set guard active
+        settingsAccessibilityGuardActive = true
+        lastSettingsGuardTriggerTime = now
+
+        Log.i(SETTINGS_GUARD_TAG, "AI_GUARDIAN_SETTINGS_ACCESSIBILITY_GUARD: DETECTED")
+
+        // Launch the password protection gate ON TOP of the Settings target screen.
+        // We do NOT call GLOBAL_ACTION_BACK — the target screen must remain
+        // underneath so it is revealed when the guard finishes.
+        try {
+            SettingsAccessibilityGuardActivity.launch(applicationContext)
+            Log.i(SETTINGS_GUARD_TAG, "AI_GUARDIAN_SETTINGS_ACCESSIBILITY_GUARD: PASSWORD_GATE_SHOWN")
+        } catch (e: Exception) {
+            Log.e(SETTINGS_GUARD_TAG, "Failed to launch SettingsAccessibilityGuardActivity: ${e.message}")
+        }
+    }
+
+    /**
+     * Called by SettingsAccessibilityGuardActivity when the password gate is dismissed
+     * (correct password, wrong password retries, or cancel/back).
+     * Clears the guard active state so future detection can work.
+     */
+    fun clearSettingsAccessibilityGuard() {
+        settingsAccessibilityGuardActive = false
+        Log.i(SETTINGS_GUARD_TAG, "AI_GUARDIAN_SETTINGS_ACCESSIBILITY_GUARD: GUARD_CLEARED")
+    }
+
+    /**
+     * Flatten the Settings window's accessibility node tree into a bounded string.
+     * Used for diagnostic log lines and detection — NOT for content filtering.
+     */
+    private fun getSettingsDiagWindowSummary(): String {
+        return try {
+            val root = rootInActiveWindow ?: return "(no root)"
+            val sb = StringBuilder(SETTINGS_DIAG_FLATTEN_MAX_CHARS)
+            collectSettingsDiagNodeText(root, 0, sb)
+            root.recycle()
+            val joined = sb.toString().trim()
+            if (joined.length > SETTINGS_DIAG_FLATTEN_MAX_CHARS) {
+                joined.substring(0, SETTINGS_DIAG_FLATTEN_MAX_CHARS) + "..."
+            } else {
+                joined.ifEmpty { "(empty)" }
+            }
+        } catch (_: Exception) {
+            "(error)"
+        }
+    }
+
+    /**
+     * Recursively collect text from a node tree for Settings diagnostic summarisation.
+     */
+    private fun collectSettingsDiagNodeText(node: AccessibilityNodeInfo?, depth: Int, sb: StringBuilder) {
+        if (node == null || depth > 8) return
+        if (sb.length > SETTINGS_DIAG_FLATTEN_MAX_CHARS) return
+
+        val t = node.text
+        if (t != null && t.isNotEmpty()) {
+            if (sb.isNotEmpty()) sb.append(' ')
+            sb.append(t)
+        }
+
+        val d = node.contentDescription
+        if (d != null && d.isNotEmpty()) {
+            if (sb.isNotEmpty()) sb.append(' ')
+            sb.append("[desc:$d]")
+        }
+
+        val childCount = node.childCount
+        for (i in 0 until childCount) {
+            try {
+                collectSettingsDiagNodeText(node.getChild(i), depth + 1, sb)
+            } catch (_: Exception) { /* skip */ }
+            if (sb.length > SETTINGS_DIAG_FLATTEN_MAX_CHARS) break
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    //  SETTINGS ACCESSIBILITY DIAGNOSTIC (detection only, no action)
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Diagnostic logger for Settings accessibility events.
+     *
+     * Logs accessibility events from Settings packages to discover the exact
+     * screen structure when the user navigates to AI Guardian's accessibility
+     * management page. This is diagnostic-only — no blocking, no action taken.
+     *
+     * Uses tag `AI_GUARDIAN_ACCESSIBILITY_SETTINGS_DIAG` — capture via:
+     *
+     *     adb logcat -s AI_GUARDIAN_ACCESSIBILITY_SETTINGS_DIAG:V
+     *
+     * Bounded by [SETTINGS_DIAG_MAX_EVENTS] to prevent logcat flooding.
+     */
+    private fun logSettingsAccessibilityDiagnostic(event: AccessibilityEvent) {
+        if (settingsDiagEventCount >= SETTINGS_DIAG_MAX_EVENTS) return
+
+        val packageName = event.packageName?.toString() ?: return
+
+        // Only process Settings packages
+        if (!isSettingsPackage(packageName)) return
+
+        val eventType = event.eventType
+        val className = event.className?.toString() ?: "(null)"
+        val eventText = event.text?.joinToString("|") { it?.toString() ?: "" } ?: "(null)"
+        val contentDesc = event.contentDescription?.toString() ?: "(null)"
+
+        // Source node info (best-effort, never crash)
+        var sourceNodeClass: String = "(null)"
+        var sourceNodeText: String = "(null)"
+        var sourceNodeDesc: String = "(null)"
+        try {
+            val src = event.source
+            if (src != null) {
+                sourceNodeClass = src.className?.toString() ?: "(null)"
+                sourceNodeText = src.text?.toString() ?: "(null)"
+                sourceNodeDesc = src.contentDescription?.toString() ?: "(null)"
+                src.recycle()
+            }
+        } catch (_: Exception) { /* source unavailable */ }
+
+        // Active window info (best-effort, may be null)
+        var activeWindowPkg: String = "(null)"
+        var activeWindowCls: String = "(null)"
+        try {
+            val root = rootInActiveWindow
+            if (root != null) {
+                activeWindowPkg = root.packageName?.toString() ?: "(null)"
+                activeWindowCls = root.className?.toString() ?: "(null)"
+                root.recycle()
+            }
+        } catch (_: Exception) { /* unavailable */ }
+
+        // Flattened text summary — only for first few events to avoid overhead
+        val windowTextSummary = if (settingsDiagEventCount < 5) {
+            try { getSettingsDiagWindowSummary() } catch (_: Exception) { "(error)" }
+        } else {
+            "(skipped after initial events)"
+        }
+
+        settingsDiagEventCount++
+
+        // Main diagnostic log line — only first few events
+        if (settingsDiagEventCount < 5) {
+            Log.i(SETTINGS_DIAG_TAG, "[event #$settingsDiagEventCount] " +
+                "type=$eventType " +
+                "pkg=$packageName " +
+                "cls=$className " +
+                "text=$eventText " +
+                "desc=$contentDesc " +
+                "srcCls=$sourceNodeClass " +
+                "srcText=$sourceNodeText " +
+                "srcDesc=$sourceNodeDesc " +
+                "winPkg=$activeWindowPkg " +
+                "winCls=$activeWindowCls")
+        }
+
+        // Log window summary for first few events (to discover screen structure)
+        if (settingsDiagEventCount <= 3 && eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            Log.i(SETTINGS_DIAG_TAG, "[event #$settingsDiagEventCount windowSummary] $windowTextSummary")
+        }
+
+        // Detect and log when AI Guardian text appears in Settings
+        val allVisibleText = "$eventText $contentDesc $sourceNodeText $sourceNodeDesc $windowTextSummary"
+        if (allVisibleText.contains("AI Guardian", ignoreCase = true)) {
+            Log.i(SETTINGS_DIAG_TAG, "AI_GUARDIAN_TEXT_FOUND_IN_SETTINGS: " +
+                "pkg=$packageName cls=$className " +
+                "winPkg=$activeWindowPkg winCls=$activeWindowCls " +
+                "text=$eventText desc=$contentDesc")
+        }
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -1328,6 +1720,9 @@ class AIGuardianAccessibilityService : AccessibilityService() {
         blockedDomains.clear()
         webBlockDomainTimestamps.clear()
         lastBlockedWebDomain = null
+        settingsDiagEventCount = 0
+        settingsAccessibilityGuardActive = false
+        lastSettingsGuardTriggerTime = 0L
         Log.i(TAG, "AI_GUARDIAN_SERVICE_HEALTH: onDestroy — " +
             "contentRules=${contentFilterEngine?.getEnabledRuleCount() ?: 0} " +
             "cacheGen=$cacheGeneration")

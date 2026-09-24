@@ -10,6 +10,8 @@ import '../../../platform/models/foreground_app_event.dart';
 import '../../../platform/models/device_owner_status.dart';
 import '../../auth/password_service.dart';
 import '../../auth/password_screen.dart';
+import '../../auth/accessibility_password_service.dart';
+import '../../auth/accessibility_security_screen.dart';
 
 /// Maximum number of foreground events retained in the debug history.
 const int _maxHistorySize = 10;
@@ -178,6 +180,24 @@ class _SettingsScreenState extends State<SettingsScreen>
     } catch (e) {
       debugPrint('[SettingsScreen] Failed to load device owner protection state: $e');
     }
+  }
+
+  /// Opens the Accessibility Security password screen.
+  /// If the user enters the correct accessibility password, the system
+  /// Accessibility Settings are opened. This uses a completely separate
+  /// credential from the app password.
+  void _openAccessibilitySettingsWithAuth() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => AccessibilitySecurityScreen(
+          onVerified: () async {
+            // Pop the security screen first, then open system settings.
+            Navigator.of(context).pop();
+            await AndroidPlatformService.openAccessibilitySettings();
+          },
+        ),
+      ),
+    );
   }
 
   /// Shows a password verification dialog. Returns true if password is correct.
@@ -349,9 +369,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                           : 'Not enabled',
                     ),
                     trailing: const Icon(Icons.chevron_right),
-                    onTap: () async {
-                      await AndroidPlatformService.openAccessibilitySettings();
-                    },
+                    onTap: _openAccessibilitySettingsWithAuth,
                   ),
                 ],
               ),
@@ -888,9 +906,7 @@ class _SettingsScreenState extends State<SettingsScreen>
             SizedBox(
               width: double.infinity,
               child: OutlinedButton.icon(
-                onPressed: () async {
-                  await AndroidPlatformService.openAccessibilitySettings();
-                },
+                onPressed: _openAccessibilitySettingsWithAuth,
                 icon: const Icon(Icons.settings),
                 label: const Text('Open Accessibility Settings'),
               ),

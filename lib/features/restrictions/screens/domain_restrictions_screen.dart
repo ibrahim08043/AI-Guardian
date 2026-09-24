@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../../platform/android_platform_service.dart';
 import '../../../platform/models/domain_model.dart';
+import '../../auth/accessibility_security_screen.dart';
 
 /// Domain / Website restrictions screen.
 /// Allows users to manage a list of blocked domains.
@@ -232,8 +233,18 @@ class _DomainRestrictionsScreenState extends State<DomainRestrictionsScreen> {
                 ),
                 if (!isAccessibilityServiceEnabled)
                   TextButton(
-                    onPressed: () async {
-                      await AndroidPlatformService.openAccessibilitySettings();
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (context) => AccessibilitySecurityScreen(
+                            onVerified: () async {
+                              Navigator.of(context).pop();
+                              await AndroidPlatformService
+                                  .openAccessibilitySettings();
+                            },
+                          ),
+                        ),
+                      );
                     },
                     child: Text(
                       'Enable',

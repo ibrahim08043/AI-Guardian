@@ -5,7 +5,7 @@ import '../../core/constants/app_constants.dart';
 
 /// Main scaffold with bottom navigation bar.
 /// This provides the primary navigation structure for the app.
-/// The dashboard is the default view after onboarding.
+/// The dashboard is the default view.
 class MainScaffold extends StatelessWidget {
   final Widget child;
 
@@ -15,9 +15,8 @@ class MainScaffold extends StatelessWidget {
     final location = GoRouterState.of(context).uri.path;
     if (location.startsWith(AppConstants.dashboardRoute)) return 0;
     if (location.startsWith(AppConstants.restrictionsRoute)) return 1;
-    if (location.startsWith(AppConstants.coachRoute)) return 2;
-    if (location.startsWith(AppConstants.analyticsRoute)) return 3;
-    if (location.startsWith(AppConstants.settingsRoute)) return 4;
+    if (location.startsWith(AppConstants.analyticsRoute)) return 2;
+    if (location.startsWith(AppConstants.settingsRoute)) return 3;
     return 0;
   }
 
@@ -30,12 +29,9 @@ class MainScaffold extends StatelessWidget {
         context.go(AppConstants.restrictionsRoute);
         break;
       case 2:
-        context.go(AppConstants.coachRoute);
-        break;
-      case 3:
         context.go(AppConstants.analyticsRoute);
         break;
-      case 4:
+      case 3:
         context.go(AppConstants.settingsRoute);
         break;
     }
@@ -58,11 +54,6 @@ class MainScaffold extends StatelessWidget {
             icon: Icon(Icons.block_outlined),
             selectedIcon: Icon(Icons.block),
             label: 'Restrictions',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.psychology_outlined),
-            selectedIcon: Icon(Icons.psychology),
-            label: 'Coach',
           ),
           NavigationDestination(
             icon: Icon(Icons.analytics_outlined),
