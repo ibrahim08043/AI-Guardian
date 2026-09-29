@@ -117,22 +117,22 @@ void main() {
 
   group('Elapsed calculation from seed', () {
     test('correct elapsed from seed to known time', () {
-      // Seed: 2026-09-21 16:00:00
-      // At:   2026-09-24 21:21:37
-      // Elapsed: 3 days, 5 hours, 21 minutes, 37 seconds
-      final seed = DateTime(2026, 9, 21, 16, 0, 0);
-      final now = DateTime(2026, 9, 24, 21, 21, 37);
+      // Seed: 2026-09-29 12:30:00 (local, PKT)
+      // At:   2026-09-29 18:51:37 (local, PKT)
+      // Elapsed: 0 days, 6 hours, 21 minutes, 37 seconds
+      final seed = DateTime(2026, 9, 29, 12, 30, 0);
+      final now = DateTime(2026, 9, 29, 18, 51, 37);
       final elapsed = now.difference(seed);
-      expect(elapsed.inDays, 3);
-      expect(elapsed.inHours % 24, 5);
+      expect(elapsed.inDays, 0);
+      expect(elapsed.inHours % 24, 6);
       expect(elapsed.inMinutes % 60, 21);
       expect(elapsed.inSeconds % 60, 37);
-      expect(formatElapsed(elapsed), '3d 5h 21m 37s');
+      expect(formatElapsed(elapsed), '0d 6h 21m 37s');
     });
 
     test('future timestamp returns zero', () {
-      final seed = DateTime(2026, 9, 21, 16, 0, 0);
-      final now = DateTime(2026, 9, 20, 10, 0, 0); // before seed
+      final seed = DateTime(2026, 9, 29, 12, 30, 0);
+      final now = DateTime(2026, 9, 28, 10, 0, 0); // before seed
       final elapsed = now.difference(seed);
       expect(formatElapsed(elapsed), '0d 0h 0m 0s');
     });

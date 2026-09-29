@@ -5,6 +5,7 @@ import 'core/theme/app_theme.dart';
 import 'features/auth/password_service.dart';
 import 'features/auth/accessibility_password_service.dart';
 import 'features/dashboard/services/last_fap_storage.dart';
+import 'platform/android_platform_service.dart';
 
 /// Entry point for AI Guardian application.
 /// This app uses a clean feature-first architecture with:
@@ -25,6 +26,17 @@ void main() async {
 
   // Load the persisted last fap timestamp for the Dashboard timer.
   await LastFapStorage.load();
+
+  // Import the default block list (websites + keywords) from assets/list.txt.
+  // This is idempotent: only inserts rules that don't already exist.
+  // Runs asynchronously — does not block app startup.
+  AndroidPlatformService.importDefaultBlockList().then((result) {
+    if (result != null) {
+      debugPrint('[main] Default block list imported: $result');
+    }
+  }).catchError((e) {
+    debugPrint('[main] Default block list import failed (non-fatal): $e');
+  });
 
   runApp(const AiGuardianApp());
 }

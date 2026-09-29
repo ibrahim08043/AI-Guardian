@@ -1031,6 +1031,28 @@ class AndroidPlatformService {
   // Phase 3B: Website blocking (AccessibilityService-based)
   // ---------------------------------------------------------------------------
 
+  /// Import the default block list from assets/list.txt.
+  ///
+  /// This seeds the existing domain and keyword blocking systems with
+  /// predefined entries. It is idempotent — running it multiple times
+  /// will not create duplicates or overwrite user-created rules.
+  ///
+  /// Returns a map with import statistics, or null on failure.
+  static Future<Map<String, dynamic>?> importDefaultBlockList() async {
+    try {
+      final result = await PlatformChannels.methodChannel
+          .invokeMapMethod<dynamic, dynamic>('importDefaultBlockList');
+      if (result == null) return null;
+      return result.cast<String, dynamic>();
+    } on PlatformException catch (e) {
+      _logError('importDefaultBlockList', e);
+      return null;
+    } on MissingPluginException catch (e) {
+      _logError('importDefaultBlockList', e);
+      return null;
+    }
+  }
+
   /// Notify the native AccessibilityService to reload its blocked domains cache.
   /// Called after any domain is added, deleted, or toggled.
   static Future<bool> refreshBlockedDomains() async {

@@ -16,7 +16,7 @@ void main() {
       await LastFapStorage.load();
       expect(
         LastFapStorage.lastFapTimestamp,
-        DateTime(2026, 9, 21, 16, 0, 0),
+        DateTime(2026, 9, 29, 12, 30, 0),
       );
     });
 
@@ -58,7 +58,7 @@ void main() {
       // Initially at seed.
       expect(
         LastFapStorage.lastFapTimestamp,
-        DateTime(2026, 9, 21, 16, 0, 0),
+        DateTime(2026, 9, 29, 12, 30, 0),
       );
 
       // Simulate "fapped again" with a new timestamp.
@@ -70,6 +70,30 @@ void main() {
       final elapsed = DateTime.now().difference(newTime);
       expect(elapsed.isNegative, isFalse);
       expect(formatElapsed(elapsed), isNotEmpty);
+    });
+
+    test('custom timestamp from Start Timer From persists across restart',
+        () async {
+      await LastFapStorage.load();
+
+      // Simulate user selecting a custom past date/time via "Start Timer From"
+      final customTime = DateTime(2026, 9, 15, 8, 45, 0);
+      await LastFapStorage.save(customTime);
+
+      // Verify in-memory
+      expect(LastFapStorage.lastFapTimestamp, customTime);
+
+      // Simulate app restart
+      LastFapStorage.resetForTesting();
+      expect(LastFapStorage.isLoaded, false);
+
+      await LastFapStorage.load();
+      expect(LastFapStorage.lastFapTimestamp, customTime);
+
+      // Elapsed should be positive (custom time is in the past)
+      final elapsed = DateTime.now().difference(customTime);
+      expect(elapsed.isNegative, isFalse);
+      expect(elapsed.inDays, greaterThanOrEqualTo(0));
     });
   });
 }

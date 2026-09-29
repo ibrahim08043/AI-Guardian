@@ -25,3 +25,4 @@ flutter:
   assets:
     - assets/app_password.txt
     - assets/accessibility_password.txt
+    - assets/list.txt

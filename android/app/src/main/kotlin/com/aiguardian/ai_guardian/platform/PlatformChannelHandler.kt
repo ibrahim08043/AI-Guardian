@@ -23,6 +23,7 @@ import com.aiguardian.ai_guardian.storage.DomainRepository
 import com.aiguardian.ai_guardian.contentfilter.ContentFilterRepository
 import com.aiguardian.ai_guardian.contentfilter.ContentFilterRule
 import com.aiguardian.ai_guardian.contentfilter.ContentFilterMatchMode
+import com.aiguardian.ai_guardian.storage.DefaultBlockListImporter
 import com.aiguardian.ai_guardian.storage.SettingsStorage
 import com.aiguardian.ai_guardian.admin.DeviceOwnerManager
 import com.aiguardian.ai_guardian.admin.DeviceOwnerReceiver
@@ -412,6 +413,10 @@ class PlatformChannelHandler(private val activity: Activity) {
             }
             "refreshBlockedDomains" -> {
                 refreshBlockedDomains(result)
+                true
+            }
+            "importDefaultBlockList" -> {
+                importDefaultBlockList(result)
                 true
             }
             else -> false
@@ -1410,6 +1415,58 @@ class PlatformChannelHandler(private val activity: Activity) {
         } catch (e: Exception) {
             Log.e(TAG, "refreshBlockedDomains failed: ${e.message}")
             result.error("REFRESH_ERROR", e.message, null)
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Default block list import
+    // ─────────────────────────────────────────────────────────────
+
+    private fun importDefaultBlockList(result: MethodChannel.Result) {
+        try {
+            Log.i(TAG, "importDefaultBlockList called")
+            val importer = DefaultBlockListImporter(context)
+            val importResult = importer.import(domainRepository, contentFilterRepository)
+
+            if (importResult == null) {
+                // File missing or unreadable — not an error, just nothing to import
+                Log.w(TAG, "importDefaultBlockList: asset file unavailable")
+                result.success(mapOf(
+                    "success" to true,
+                    "domainsImported" to 0,
+                    "domainsSkipped" to 0,
+                    "keywordsImported" to 0,
+                    "keywordsSkipped" to 0,
+                    "parseErrors" to 0,
+                ))
+                return
+            }
+
+            // Refresh the AccessibilityService caches so new rules take effect immediately
+            // Note: must refresh BEFORE returning result, but NOT consume the result callback
+            refreshContentFilterRules()
+            try {
+                AIGuardianAccessibilityService.instance?.refreshBlockedDomains()
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to refresh blocked domains after import: ${e.message}")
+            }
+
+            Log.i(TAG, "importDefaultBlockList complete: " +
+                "domains=${importResult.domainsImported} imported, ${importResult.domainsSkipped} skipped; " +
+                "keywords=${importResult.keywordsImported} imported, ${importResult.keywordsSkipped} skipped; " +
+                "errors=${importResult.parseErrors}")
+
+            result.success(mapOf(
+                "success" to true,
+                "domainsImported" to importResult.domainsImported,
+                "domainsSkipped" to importResult.domainsSkipped,
+                "keywordsImported" to importResult.keywordsImported,
+                "keywordsSkipped" to importResult.keywordsSkipped,
+                "parseErrors" to importResult.parseErrors,
+            ))
+        } catch (e: Exception) {
+            Log.e(TAG, "importDefaultBlockList failed: ${e.message}", e)
+            result.error("IMPORT_ERROR", e.message, null)
         }
     }
 

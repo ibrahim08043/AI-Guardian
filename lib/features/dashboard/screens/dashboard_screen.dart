@@ -75,6 +75,54 @@ class _DashboardScreenState extends State<DashboardScreen>
     });
   }
 
+  void _onStartTimerFrom() async {
+    final now = DateTime.now();
+
+    // Step 1: Pick date
+    final pickedDate = await showDatePicker(
+      context: context,
+      initialDate: _lastFap,
+      firstDate: DateTime(2020),
+      lastDate: now,
+    );
+    if (pickedDate == null || !mounted) return;
+
+    // Step 2: Pick time
+    final pickedTime = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(_lastFap),
+    );
+    if (pickedTime == null || !mounted) return;
+
+    // Step 3: Combine date + time into a local DateTime
+    final selected = DateTime(
+      pickedDate.year,
+      pickedDate.month,
+      pickedDate.day,
+      pickedTime.hour,
+      pickedTime.minute,
+    );
+
+    // Step 4: Validate — must not be in the future
+    if (selected.isAfter(now)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cannot set timer to a future time'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    // Step 5: Save and update
+    await LastFapStorage.save(selected);
+    setState(() {
+      _now = DateTime.now();
+      _lastFap = selected;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final elapsed = _now.difference(_lastFap);
@@ -140,7 +188,19 @@ class _DashboardScreenState extends State<DashboardScreen>
                       fontFamily: 'monospace',
                     ),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 16),
+
+              // Start Timer From button
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: OutlinedButton.icon(
+                  onPressed: _onStartTimerFrom,
+                  icon: const Icon(Icons.calendar_today, size: 18),
+                  label: const Text('Start Timer From'),
+                ),
+              ),
+              const SizedBox(height: 16),
 
               // FAPPED AGAIN button
               SizedBox(

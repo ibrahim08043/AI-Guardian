@@ -13,8 +13,9 @@ class LastFapStorage {
 
   static const String _key = 'last_fap_timestamp';
 
-  /// Development seed timestamp: September 21, 2026 4:00 PM local time.
-  static final DateTime seedTimestamp = DateTime(2026, 9, 21, 16, 0, 0);
+  /// Development seed timestamp: September 29, 2026 12:30 PM local time.
+  /// On a Pakistan (UTC+5) device this is exactly 2026-09-29 12:30:00 PKT.
+  static final DateTime seedTimestamp = DateTime(2026, 9, 29, 12, 30, 0);
 
   /// In-memory cache of the last fap timestamp.
   static DateTime? _cachedTimestamp;
