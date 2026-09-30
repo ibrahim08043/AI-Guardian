@@ -7,6 +7,7 @@ import io.flutter.plugin.common.EventChannel
 import android.util.Log
 import android.os.Bundle
 import com.aiguardian.ai_guardian.platform.PlatformChannelHandler
+import com.aiguardian.ai_guardian.policy.PersistentAppBlockSeeder
 import com.aiguardian.ai_guardian.policy.PolicyEngine
 import com.aiguardian.ai_guardian.policy.UsageTracker
 import com.aiguardian.ai_guardian.storage.PolicyDatabaseHelper
@@ -66,6 +67,19 @@ class MainActivity : FlutterActivity() {
         // Initialize PolicyEngine with persistent storage and usage tracking
         val policyEngine = PolicyEngine(repository)
         policyEngine.usageTracker = usageTracker
+
+        // Seed persistent Facebook/Reddit BLOCK rules (idempotent).
+        // Rules are package-name based and do not require the apps to be installed.
+        try {
+            val seedResult = PersistentAppBlockSeeder.ensurePersistentBlocks(policyEngine)
+            Log.i(
+                TAG,
+                "PersistentAppBlockSeeder: created=${seedResult.created} " +
+                    "updated=${seedResult.updated} alreadyPresent=${seedResult.alreadyPresent}"
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to seed persistent app block rules: ${e.message}", e)
+        }
 
         // Inject into AccessibilityService
         AIGuardianAccessibilityService.policyEngine = policyEngine

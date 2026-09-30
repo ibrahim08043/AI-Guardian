@@ -8,7 +8,8 @@ import '../../auth/password_service.dart';
 import '../../auth/password_screen.dart';
 import 'restriction_settings_screen.dart';
 import 'domain_restrictions_screen.dart';
-import 'content_filter_screen.dart';
+// ContentFilterScreen intentionally not imported — Content Filtering UI is hidden.
+// The screen file and all backend content-filter logic remain in the codebase.
 
 /// Restrictions screen - manage app blocking rules and domain restrictions.
 /// Uses tabs to switch between app restrictions and website/domain restrictions.
@@ -40,7 +41,8 @@ class _RestrictionsScreenState extends State<RestrictionsScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    // Apps + Websites only. Words/Content Filtering tab is hidden from the UI.
+    _tabController = TabController(length: 2, vsync: this);
     // _isAuthenticated starts as false — password screen will always appear.
     // It becomes true ONLY after correct password entry via onVerified callback.
   }
@@ -216,7 +218,6 @@ class _RestrictionsScreenState extends State<RestrictionsScreen>
           tabs: const [
             Tab(text: 'Apps'),
             Tab(text: 'Websites'),
-            Tab(text: 'Words'),
           ],
         ),
       ),
@@ -271,8 +272,8 @@ class _RestrictionsScreenState extends State<RestrictionsScreen>
           ),
           // Websites tab
           const DomainRestrictionsScreen(),
-          // Words tab — content filtering
-          const ContentFilterScreen(),
+          // Words/Content Filtering tab intentionally omitted — UI hidden only.
+          // ContentFilterScreen remains in the codebase for future re-enable.
         ],
       ),
     );

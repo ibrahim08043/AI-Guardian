@@ -14,6 +14,7 @@ import com.aiguardian.ai_guardian.enforcement.SettingsAccessibilityGuardActivity
 import com.aiguardian.ai_guardian.enforcement.EnforcementManager
 import com.aiguardian.ai_guardian.policy.DomainPolicy
 import com.aiguardian.ai_guardian.policy.ForegroundMonitor
+import com.aiguardian.ai_guardian.policy.PersistentAppBlockSeeder
 import com.aiguardian.ai_guardian.policy.PolicyEngine
 import com.aiguardian.ai_guardian.policy.PolicyResult
 import com.aiguardian.ai_guardian.policy.UsageTracker
@@ -262,6 +263,15 @@ class AIGuardianAccessibilityService : AccessibilityService() {
             Log.e(TAG, "Failed to create PolicyRepository for monitor: ${e.message}")
             null
         }
+
+        // Ensure persistent Facebook/Reddit BLOCK rules exist on every service start.
+        // Idempotent — does not create duplicates and does not touch other policies.
+        try {
+            PersistentAppBlockSeeder.ensurePersistentBlocks(engine)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to seed persistent app block rules on service connect: ${e.message}", e)
+        }
+
         foregroundMonitor = ForegroundMonitor(engine, repo, object : ForegroundMonitor.EnforcementCallback {
             override fun onEnforce(packageName: String, result: PolicyResult) {
                 Log.i(TAG, "ForegroundMonitor enforcement: $packageName (${result.reason})")
@@ -530,26 +540,37 @@ class AIGuardianAccessibilityService : AccessibilityService() {
 
         Log.i(TAG, "[Filter] Match: ruleId=${filterResult.ruleId} mode=${filterResult.matchMode} pkg=$packageName")
 
-        // Debounce: first match triggers immediately, repeated matches within cooldown are suppressed
-        val debounceKey = "$packageName:${filterResult.matchedPhrase}"
-        val now = System.currentTimeMillis()
-        val lastBlock = contentFilterBlockTimes[debounceKey] ?: 0L
+        // TEMPORARILY DISABLED — CONTENT FILTER MATCH BLOCKING
+        // ContentFilterEngine matching still runs above; only the
+        // match → BlockActivity enforcement conversion is commented out.
+        // Restore the original block below to re-enable content-filter blocking.
+        //
+        // // Debounce: first match triggers immediately, repeated matches within cooldown are suppressed
+        // val debounceKey = "$packageName:${filterResult.matchedPhrase}"
+        // val now = System.currentTimeMillis()
+        // val lastBlock = contentFilterBlockTimes[debounceKey] ?: 0L
+        //
+        // if (now - lastBlock <= contentFilterCooldownMs) {
+        //     Log.d(TAG, "[Filter] Debounce active (${now - lastBlock}ms < ${contentFilterCooldownMs}ms)")
+        //     return
+        // }
+        //
+        // contentFilterBlockTimes[debounceKey] = now
+        // val reason = "Content filter match (rule ${filterResult.ruleId}, ${filterResult.matchMode})"
+        // Log.i(TAG, "[Filter] ENFORCING: BlockActivity for $packageName (reason: $reason)")
+        //
+        // try {
+        //     BlockActivity.launch(applicationContext, packageName, reason)
+        //     Log.i(TAG, "[Filter] BlockActivity launched successfully")
+        // } catch (e: Exception) {
+        //     Log.e(TAG, "[Filter] BlockActivity launch FAILED: ${e.message}", e)
+        // }
 
-        if (now - lastBlock <= contentFilterCooldownMs) {
-            Log.d(TAG, "[Filter] Debounce active (${now - lastBlock}ms < ${contentFilterCooldownMs}ms)")
-            return
-        }
-
-        contentFilterBlockTimes[debounceKey] = now
-        val reason = "Content filter match (rule ${filterResult.ruleId}, ${filterResult.matchMode})"
-        Log.i(TAG, "[Filter] ENFORCING: BlockActivity for $packageName (reason: $reason)")
-
-        try {
-            BlockActivity.launch(applicationContext, packageName, reason)
-            Log.i(TAG, "[Filter] BlockActivity launched successfully")
-        } catch (e: Exception) {
-            Log.e(TAG, "[Filter] BlockActivity launch FAILED: ${e.message}", e)
-        }
+        Log.i(
+            TAG,
+            "[Filter] Match detected but Content Filter match→block TEMPORARILY DISABLED — " +
+                "not launching BlockActivity for $packageName"
+        )
     }
 
     /**
