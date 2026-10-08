@@ -69,9 +69,6 @@ class AIGuardianAccessibilityService : AccessibilityService() {
         /** Package name for the Android Package Installer (uninstall confirmation). */
         private const val PACKAGE_INSTALLER = "com.google.android.packageinstaller"
 
-        /** Package name for Android Settings (App Info page). */
-        private const val PACKAGE_SETTINGS = "com.android.settings"
-
         // ── Web diagnostic constants ──────────────────────────────────────────
         /** Log tag for browser website detection diagnostic output. */
         private const val WEB_DIAG_TAG = "AI_GUARDIAN_WEB_DIAG"
@@ -118,6 +115,15 @@ class AIGuardianAccessibilityService : AccessibilityService() {
 
         /** Maximum character length for Settings diagnostic window summary. */
         private const val SETTINGS_DIAG_FLATTEN_MAX_CHARS = 1200
+
+        /**
+         * Fully-qualified class name of the password gate Activity. Used to
+         * distinguish the gate's own window (an overlay ON the protected
+         * Settings page) from other AI Guardian windows when tracking whether
+         * the protected page has left the foreground.
+         */
+        private val SETTINGS_GUARD_ACTIVITY_CLASS: String =
+            SettingsAccessibilityGuardActivity::class.java.name
 
         // ── Web block constants ──────────────────────────────────────────────
         /** Log tag for website blocking actions. */
@@ -236,6 +242,34 @@ class AIGuardianAccessibilityService : AccessibilityService() {
     @Volatile
     private var lastSettingsGuardTriggerTime = 0L
 
+    /**
+     * Whether the user is currently ON the protected AI Guardian Accessibility
+     * Settings page (the page with the AccessibilityService enable/disable toggle).
+     *
+     * Distinct from [settingsAccessibilityGuardActive] (password gate showing).
+     * This tracks the *page context* so the guard can be re-armed when the
+     * protected page becomes foreground/active again — including when Android
+     * resumes an EXISTING Settings activity/task via Home → Recent Apps rather
+     * than creating a new Activity. Re-arm is driven by this flag's
+     * absent→present EDGE (a departure, then an arrival), never by elapsed
+     * time, so the protection is restored no matter how fast the resume is.
+     */
+    @Volatile
+    private var settingsProtectedPageActive = false
+
+    /**
+     * Whether the password gate has already been satisfied during the CURRENT
+     * visit to the protected page.
+     *
+     * Set when the gate is dismissed ([clearSettingsAccessibilityGuard]) and
+     * cleared whenever the protected page is left or freshly (re-)entered.
+     * This prevents re-prompting loops on the many repeated
+     * WINDOW_STATE_CHANGED events Settings emits for the same page, WITHOUT
+     * weakening the guard: a fresh arrival on the page always re-arms.
+     */
+    @Volatile
+    private var settingsAuthorizedVisit = false
+
     // ── Website blocking state ───────────────────────────────────────────────
     /** Normalized blocked domains loaded from DomainRepository. */
     private val blockedDomains = mutableSetOf<String>()
@@ -256,12 +290,41 @@ class AIGuardianAccessibilityService : AccessibilityService() {
         instance = this
         Log.i(TAG, "AI Guardian AccessibilityService connected")
 
-        val engine = policyEngine ?: PolicyEngine()
         val repo = try {
             PolicyRepository(PolicyDatabaseHelper(applicationContext))
         } catch (e: Exception) {
             Log.e(TAG, "Failed to create PolicyRepository for monitor: ${e.message}")
             null
+        }
+
+        // ── REBOOT LIFECYCLE RESTORATION ──────────────────────────────────
+        // The repository-backed PolicyEngine and UsageTracker are normally
+        // injected by MainActivity.configureFlutterEngine() when the Flutter
+        // UI starts. After a device reboot, Android re-creates this service
+        // in a FRESH process before (or without) MainActivity ever running,
+        // so those statics are still null. Without this restoration the
+        // fallback engine would have no PolicyRepository, evaluate() could
+        // only see an empty in-memory map, and every SQLite-backed app
+        // blocking rule (including persistent package rules) would silently
+        // return ALLOW until the UI was manually opened.
+        //
+        // When the statics have already been injected (normal, pre-reboot
+        // behavior), this block is a no-op and the existing engine is used
+        // exactly as before. If MainActivity later injects its own engine,
+        // ForegroundMonitor.updateEngine() swaps it in unchanged.
+        val engine = policyEngine ?: PolicyEngine(repo).also { restored ->
+            val tracker = usageTracker ?: repo?.let { UsageTracker(it) }
+            restored.usageTracker = tracker
+            policyEngine = restored
+            if (tracker != null) {
+                usageTracker = tracker
+            }
+            Log.i(
+                TAG,
+                "Reboot restore: repository-backed PolicyEngine initialized " +
+                    "(repository=${if (repo != null) "OK" else "NULL"}, " +
+                    "usageTracker=${if (tracker != null) "OK" else "NULL"})"
+            )
         }
 
         // Ensure persistent Facebook/Reddit BLOCK rules exist on every service start.
@@ -868,31 +931,114 @@ class AIGuardianAccessibilityService : AccessibilityService() {
      * Requires ≥2 signals for positive detection.
      */
     private fun checkSettingsAccessibilityGuard(event: AccessibilityEvent) {
-        // Skip if guard is already active (prevent loops)
-        if (settingsAccessibilityGuardActive) return
-
-        // Skip AI Guardian's own events
         val packageName = event.packageName?.toString() ?: return
+
+        // NOTE: do NOT early-return merely because the gate is currently
+        // "active". Pressing Home backgrounds (does not destroy) the gate, so
+        // the flag stays set; an early return here is exactly the stale-latch
+        // that caused the Home → Recents bypass. The page-context state machine
+        // below runs regardless and re-arms on the departure/arrival edge.
+        val now = System.currentTimeMillis()
+        val isWindowStateChange = event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+
+        // ── LEAVE DETECTION ──────────────────────────────────────────────────
+        // The user has left the protected AI Guardian Accessibility page.
+        //
+        // A departure is a window-state change bringing a foreground context
+        // that is not the protected Settings page:
+        //   - Home / another app (any non-Settings package)
+        //   - one of our own non-gate windows (MainActivity, BlockActivity…)
+        // It is NOT a departure when the window is:
+        //   - an input-method/keyboard window (an overlay, not an app switch), or
+        //   - the password gate itself (an overlay ON the protected page).
+        // Another Settings screen is handled after page detection below.
+        //
+        // Detecting the departure edge (rather than relying on elapsed time) is
+        // what makes Home → Recent Apps → resume the existing Settings task
+        // re-arm reliably, even when the round trip completes in well under the
+        // old 5s cooldown window.
+        if (settingsProtectedPageActive &&
+            isWindowStateChange &&
+            hasLeftProtectedPage(packageName, event)) {
+            settingsProtectedPageActive = false
+            settingsAuthorizedVisit = false
+            Log.i(SETTINGS_GUARD_TAG, "LEFT protected AI Guardian Accessibility page (pkg=$packageName)")
+        }
+
+        // AI Guardian's own windows can never BE the protected page. The leave
+        // check above has already run, so an own-package window that is not the
+        // password gate correctly counts as a departure.
         if (packageName == OWN_PACKAGE) return
 
-        // Check cooldown
-        val now = System.currentTimeMillis()
+        // Only process Settings window-state changes below this point.
+        if (!isSettingsPackage(packageName)) return
+        if (!isWindowStateChange) return
+
+        // Is the protected page (AI Guardian's AccessibilityService details
+        // page) foreground right now?
+        if (!detectAiGuardianAccessibilityDetailsPage(event, packageName)) {
+            // A DIFFERENT Settings screen (Wi-Fi/Display/Battery/Apps/list…) is
+            // foreground, so the protected page is NOT. Clear the page context
+            // so that navigating back to the protected page later is a fresh
+            // ARRIVAL and re-arms the protection — without this, the page flag
+            // stayed stale-true across within-Settings navigation and the return
+            // visit took the same-visit path with no re-arm. This only clears
+            // state: the guard is NEVER triggered here, so every other Settings
+            // screen remains unrestricted.
+            //
+            // While the gate itself is on screen, the covered Settings window's
+            // events are ambiguous — leave the visit state untouched so gate
+            // dismissal can still mark the visit authorized (prevents a
+            // password → immediate re-prompt loop).
+            if (settingsProtectedPageActive && !settingsAccessibilityGuardActive) {
+                settingsProtectedPageActive = false
+                settingsAuthorizedVisit = false
+                Log.i(SETTINGS_GUARD_TAG, "LEFT protected AI Guardian Accessibility page (other Settings screen pkg=$packageName)")
+            }
+            return
+        }
+
+        // Protected page is (again) foreground.
+        if (!settingsProtectedPageActive) {
+            // ARRIVAL EDGE: the protected page just became active. This covers
+            // the Home → Recent Apps bypass directly — the previously-left page
+            // is now active again, and because re-arm is edge-driven, it fires
+            // regardless of how quickly the user came back.
+            settingsProtectedPageActive = true
+            settingsAuthorizedVisit = false
+            Log.d(SETTINGS_GUARD_TAG, "On protected AI Guardian Accessibility page — rearmed")
+            triggerSettingsAccessibilityGuard()
+            return
+        }
+
+        // Still on the protected page (same visit — no leave edge).
+        // Do NOT re-prompt on the repeated WINDOW_STATE_CHANGED events Settings
+        // emits for the same page while the gate is still up (Home was pressed,
+        // gate is backgrounded but alive and unauthenticated). The page-arrival
+        // edge above is what re-arms; this is only a same-visit duplicate guard.
+        if (settingsAccessibilityGuardActive) {
+            Log.d(SETTINGS_GUARD_TAG, "GUARD_VISIBLE (same visit — no duplicate prompt)")
+            return
+        }
+
+        // Still on the protected page after the gate was dismissed (password
+        // accepted, or cancelled). Do NOT re-prompt on the same visit.
+        if (settingsAuthorizedVisit) {
+            Log.d(SETTINGS_GUARD_TAG, "GUARD_VISIBLE (authorized visit — no re-prompt)")
+            return
+        }
+
+        // Last-resort safety net only: an emergency throttle for the extremely
+        // unlikely case of the page being re-detected without a leave edge
+        // (e.g. an event stream that announces the page repeatedly with no
+        // intervening non-Settings window). It is NOT the re-arm mechanism.
         if (now - lastSettingsGuardTriggerTime < SETTINGS_GUARD_COOLDOWN_MS) {
             Log.d(SETTINGS_GUARD_TAG, "COOLDOWN (${now - lastSettingsGuardTriggerTime}ms < ${SETTINGS_GUARD_COOLDOWN_MS}ms)")
             return
         }
 
-        // Only process events from Settings-related packages
-        if (!isSettingsPackage(packageName)) return
-
-        // Only process window state changes (screen navigation)
-        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
-
-        // Detect AI Guardian accessibility details page
-        if (detectAiGuardianAccessibilityDetailsPage(event, packageName)) {
-            Log.w(SETTINGS_GUARD_TAG, "AI_GUARDIAN_SETTINGS_ACCESSIBILITY_GUARD: DETECTED")
-            triggerSettingsAccessibilityGuard()
-        }
+        Log.w(SETTINGS_GUARD_TAG, "AI_GUARDIAN_SETTINGS_ACCESSIBILITY_GUARD: DETECTED")
+        triggerSettingsAccessibilityGuard()
     }
 
     /**
@@ -903,6 +1049,42 @@ class AIGuardianAccessibilityService : AccessibilityService() {
             packageName == "com.sec.android.app.safetyassistance" ||
             packageName == "com.samsung.android.settings" ||
             packageName.contains("settings", ignoreCase = true)
+    }
+
+    /**
+     * True when a window-state change means the protected AI Guardian
+     * Accessibility page is no longer the foreground context.
+     */
+    private fun hasLeftProtectedPage(packageName: String, event: AccessibilityEvent): Boolean {
+        // Our own password gate is an overlay ON the protected page — its
+        // window appearing does not mean the user left the page. (Clearing the
+        // page context there would make the gate dismissal skip the authorized
+        // mark and re-prompt after every successful password entry.)
+        if (packageName == OWN_PACKAGE) {
+            return event.className?.toString() != SETTINGS_GUARD_ACTIVITY_CLASS
+        }
+        // Input-method (soft keyboard) windows overlay whatever is below them —
+        // a keyboard appearing or hiding is not an app switch, so it must not
+        // clear the page context while the protected page/gate is still shown.
+        if (isImePackage(packageName)) {
+            return false
+        }
+        // Any other non-Settings foreground package (Home launcher, another
+        // app) is a real departure from the Settings page.
+        return !isSettingsPackage(packageName)
+    }
+
+    /**
+     * True for input-method (soft keyboard) window packages such as Samsung
+     * Honeyboard, Gboard, or AOSP LatinIME.
+     */
+    private fun isImePackage(packageName: String): Boolean {
+        val p = packageName.lowercase()
+        return p.contains("inputmethod") ||
+            p.contains("honeyboard") ||
+            p.contains("keyboard") ||
+            p.contains("softkeyboard") ||
+            p.endsWith(".ime")
     }
 
     /**
@@ -928,54 +1110,91 @@ class AIGuardianAccessibilityService : AccessibilityService() {
         val contentDesc = event.contentDescription?.toString() ?: ""
         val className = event.className?.toString() ?: ""
 
-        // Get flattened window text summary
-        val windowTextSummary = try {
-            getSettingsDiagWindowSummary()
+        // Root node of THE WINDOW THIS EVENT IS ABOUT.
+        //
+        // Prefer event.source over rootInActiveWindow: for a window-state event
+        // the source is bound to the window that changed state (its window id is
+        // recorded when the event is created). When Android resumes an EXISTING
+        // Settings task from Recent Apps — no new Activity, no onCreate — this
+        // is the node that reliably points at the resumed window: by the time
+        // our process handles that single resume event, rootInActiveWindow can
+        // still be the previous (launcher/Recents) window or null, which made
+        // page detection fail on exactly the Home → Recents → return transition
+        // and permanently skipped the re-arm for it.
+        val windowRoot: AccessibilityNodeInfo? = try {
+            event.source
         } catch (_: Exception) {
-            "(error)"
+            null
+        } ?: try {
+            rootInActiveWindow
+        } catch (_: Exception) {
+            null
         }
 
-        val allVisibleText = "$eventText $contentDesc $windowTextSummary"
-
-        // MANDATORY: "AI Guardian" text visible — this is the identity signal.
-        // Without this, the screen is NOT about AI Guardian and must NOT be protected.
-        val hasAiGuardianName = allVisibleText.contains("AI Guardian", ignoreCase = true) ||
-            allVisibleText.contains("aiguardian", ignoreCase = true) ||
-            allVisibleText.contains("ai_guardian", ignoreCase = true)
-
-        // If AI Guardian name is not visible, this is NOT the AI Guardian page.
-        if (!hasAiGuardianName) {
-            return false
-        }
-
-        // AI Guardian name IS visible — now confirm accessibility context.
-        // Signal A: Accessibility-related class/activity name
-        val a11yKeywords = listOf(
-            "accessibility", "accessibilityservice", "accessibility_settings",
-            "accessibility details", "accessibility service"
-        )
-        val allClassText = "$className".lowercase()
-        val hasA11yClass = a11yKeywords.any { allClassText.contains(it) }
-
-        // Signal B: Toggle/switch node present (the enable/disable control)
-        var hasToggleNode = false
         try {
-            val root = rootInActiveWindow
-            if (root != null) {
-                hasToggleNode = findToggleNode(root, 0)
-                root.recycle()
+            // Flattened text summary of the event's own window (same bounds and
+            // format as the previous rootInActiveWindow-based summary).
+            val windowTextSummary = try {
+                if (windowRoot == null) {
+                    "(no root)"
+                } else {
+                    val sb = StringBuilder(SETTINGS_DIAG_FLATTEN_MAX_CHARS)
+                    collectSettingsDiagNodeText(windowRoot, 0, sb)
+                    val joined = sb.toString().trim()
+                    if (joined.length > SETTINGS_DIAG_FLATTEN_MAX_CHARS) {
+                        joined.substring(0, SETTINGS_DIAG_FLATTEN_MAX_CHARS) + "..."
+                    } else {
+                        joined.ifEmpty { "(empty)" }
+                    }
+                }
+            } catch (_: Exception) {
+                "(error)"
             }
-        } catch (_: Exception) { /* unavailable */ }
 
-        val hasA11yContext = hasA11yClass || hasToggleNode
+            val allVisibleText = "$eventText $contentDesc $windowTextSummary"
 
-        // Log detection result
-        Log.i(SETTINGS_DIAG_TAG, "SETTINGS_A11Y_DETECT: " +
-            "aiGuardian=$hasAiGuardianName a11yClass=$hasA11yClass toggle=$hasToggleNode " +
-            "context=$hasA11yContext pkg=$packageName cls=$className")
+            // MANDATORY: "AI Guardian" text visible — this is the identity signal.
+            // Without this, the screen is NOT about AI Guardian and must NOT be protected.
+            val hasAiGuardianName = allVisibleText.contains("AI Guardian", ignoreCase = true) ||
+                allVisibleText.contains("aiguardian", ignoreCase = true) ||
+                allVisibleText.contains("ai_guardian", ignoreCase = true)
 
-        // FINAL: AI Guardian name MANDATORY + accessibility context
-        return hasAiGuardianName && hasA11yContext
+            // If AI Guardian name is not visible, this is NOT the AI Guardian page.
+            if (!hasAiGuardianName) {
+                return false
+            }
+
+            // AI Guardian name IS visible — now confirm accessibility context.
+            // Signal A: Accessibility-related class/activity name
+            val a11yKeywords = listOf(
+                "accessibility", "accessibilityservice", "accessibility_settings",
+                "accessibility details", "accessibility service"
+            )
+            val allClassText = "$className".lowercase()
+            val hasA11yClass = a11yKeywords.any { allClassText.contains(it) }
+
+            // Signal B: Toggle/switch node present (the enable/disable control),
+            // searched in the event's own window root.
+            val hasToggleNode = try {
+                findToggleNode(windowRoot, 0)
+            } catch (_: Exception) {
+                false
+            }
+
+            val hasA11yContext = hasA11yClass || hasToggleNode
+
+            // Log detection result
+            Log.i(SETTINGS_DIAG_TAG, "SETTINGS_A11Y_DETECT: " +
+                "aiGuardian=$hasAiGuardianName a11yClass=$hasA11yClass toggle=$hasToggleNode " +
+                "context=$hasA11yContext pkg=$packageName cls=$className")
+
+            // FINAL: AI Guardian name MANDATORY + accessibility context
+            return hasAiGuardianName && hasA11yContext
+        } finally {
+            try {
+                windowRoot?.recycle()
+            } catch (_: Exception) { /* already recycled */ }
+        }
     }
 
     /**
@@ -1021,13 +1240,14 @@ class AIGuardianAccessibilityService : AccessibilityService() {
      *    (NO BACK action — the target screen stays underneath)
      */
     private fun triggerSettingsAccessibilityGuard() {
-        val now = System.currentTimeMillis()
-
-        // Set guard active
+        // Set guard active. While this is true, further events are ignored
+        // (see the top of checkSettingsAccessibilityGuard), so no second popup
+        // can appear while the gate is on screen. The gate clears this flag
+        // in clearSettingsAccessibilityGuard() when it is destroyed.
         settingsAccessibilityGuardActive = true
-        lastSettingsGuardTriggerTime = now
+        lastSettingsGuardTriggerTime = System.currentTimeMillis()
 
-        Log.i(SETTINGS_GUARD_TAG, "AI_GUARDIAN_SETTINGS_ACCESSIBILITY_GUARD: DETECTED")
+        Log.w(SETTINGS_GUARD_TAG, "AI_GUARDIAN_SETTINGS_ACCESSIBILITY_GUARD: REARMED/DETECTED")
 
         // Launch the password protection gate ON TOP of the Settings target screen.
         // We do NOT call GLOBAL_ACTION_BACK — the target screen must remain
@@ -1046,8 +1266,17 @@ class AIGuardianAccessibilityService : AccessibilityService() {
      * Clears the guard active state so future detection can work.
      */
     fun clearSettingsAccessibilityGuard() {
+        // The gate was dismissed. If the protected page is still the foreground
+        // context, mark the visit as authorized so the guard does not immediately
+        // re-prompt on the same visit. The flag is reset the moment the user
+        // leaves the page (or on the next arrival), so the protection is fully
+        // re-armed afterwards — Home → Recents → returning to the page prompts
+        // again.
+        if (settingsProtectedPageActive) {
+            settingsAuthorizedVisit = true
+        }
         settingsAccessibilityGuardActive = false
-        Log.i(SETTINGS_GUARD_TAG, "AI_GUARDIAN_SETTINGS_ACCESSIBILITY_GUARD: GUARD_CLEARED")
+        Log.i(SETTINGS_GUARD_TAG, "AI_GUARDIAN_SETTINGS_ACCESSIBILITY_GUARD: GUARD_CLEARED (authorizedVisit=$settingsAuthorizedVisit)")
     }
 
     /**
@@ -1743,6 +1972,8 @@ class AIGuardianAccessibilityService : AccessibilityService() {
         lastBlockedWebDomain = null
         settingsDiagEventCount = 0
         settingsAccessibilityGuardActive = false
+        settingsProtectedPageActive = false
+        settingsAuthorizedVisit = false
         lastSettingsGuardTriggerTime = 0L
         Log.i(TAG, "AI_GUARDIAN_SERVICE_HEALTH: onDestroy — " +
             "contentRules=${contentFilterEngine?.getEnabledRuleCount() ?: 0} " +

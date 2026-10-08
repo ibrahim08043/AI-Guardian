@@ -48,6 +48,13 @@ class SettingsAccessibilityGuardActivity : Activity() {
             val intent = Intent(context, SettingsAccessibilityGuardActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 addFlags(Intent.FLAG_ACTIVITY_NO_HISTORY)
+                // Re-triggering the guard while a previous gate instance is
+                // alive but backgrounded (Home pressed while the gate was up,
+                // then the protected Settings page is re-entered) brings that
+                // EXISTING instance forward instead of stacking a second
+                // password dialog on top of it. If no instance exists, this
+                // flag is a no-op and a fresh gate starts normally.
+                addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
             }
             try {
                 context.startActivity(intent)
