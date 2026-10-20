@@ -204,6 +204,15 @@ class AIGuardianAccessibilityService : AccessibilityService() {
     @Volatile
     private var lastGuardTriggerTime = 0L
 
+    /**
+     * Whether the user has successfully authorized the current uninstall attempt.
+     * Set when the password gate is dismissed with correct password.
+     * Cleared when the user leaves the uninstall flow or on fresh arrival.
+     * Prevents re-prompting when we re-launch the uninstall confirmation.
+     */
+    @Volatile
+    private var uninstallAuthorized = false
+
     // ── Health tracking ─────────────────────────────────────────────────────
     /** Monotonic counter incremented each time caches are successfully reloaded. */
     @Volatile
@@ -269,6 +278,15 @@ class AIGuardianAccessibilityService : AccessibilityService() {
      */
     @Volatile
     private var settingsAuthorizedVisit = false
+
+    /**
+     * Whether the user has successfully authorized the current Accessibility Settings attempt.
+     * Set when the password gate is dismissed with correct password.
+     * Cleared when the user leaves the Accessibility Settings page or on fresh arrival.
+     * Prevents re-prompting when we re-launch the Accessibility Settings.
+     */
+    @Volatile
+    private var settingsAuthorized = false
 
     // ── Website blocking state ───────────────────────────────────────────────
     /** Normalized blocked domains loaded from DomainRepository. */
@@ -528,6 +546,16 @@ class AIGuardianAccessibilityService : AccessibilityService() {
 
         val previousPackage = lastForegroundPackage
         lastForegroundPackage = packageName
+
+        // Clear uninstall authorization when leaving Package Installer
+        if (previousPackage == PACKAGE_INSTALLER) {
+            clearUninstallAuthorized()
+        }
+
+        // Clear settings authorization when leaving Settings
+        if (previousPackage != null && isSettingsPackage(previousPackage) && !isSettingsPackage(packageName)) {
+            clearSettingsAuthorized()
+        }
 
         // Usage session tracking
         val tracker = usageTracker ?: policyEngine?.usageTracker
@@ -792,6 +820,12 @@ class AIGuardianAccessibilityService : AccessibilityService() {
         val packageName = event.packageName?.toString() ?: return
         if (packageName == OWN_PACKAGE) return
 
+        // If already authorized for this uninstall attempt, don't re-prompt
+        if (uninstallAuthorized) {
+            Log.d(GUARD_TAG, "Already authorized for uninstall, skipping re-prompt")
+            return
+        }
+
         // Check cooldown
         val now = System.currentTimeMillis()
         if (now - lastGuardTriggerTime < UNINSTALL_GUARD_COOLDOWN_MS) {
@@ -862,40 +896,39 @@ class AIGuardianAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Trigger the uninstall guard: interrupt the uninstall flow and show
-     * the password protection gate.
+     * Trigger the uninstall guard: show the password protection gate
+     * ON TOP of the uninstall confirmation dialog.
      *
      * Steps:
      * 1. Set guard active (prevent re-triggering)
      * 2. Log the detection
-     * 3. Attempt to interrupt the uninstall via GLOBAL_ACTION_BACK
-     * 4. Launch the UninstallGuardActivity password gate
+     * 3. Launch the UninstallGuardActivity password gate (NO BACK action —
+     *    the uninstall confirmation dialog stays underneath so it is revealed
+     *    when the guard finishes)
      */
     private fun triggerUninstallGuard() {
+        // Don't show guard if already authorized for this attempt
+        if (uninstallAuthorized) {
+            Log.d(GUARD_TAG, "Already authorized, not showing guard again")
+            return
+        }
+
         val now = System.currentTimeMillis()
 
         // Set guard active
         uninstallGuardActive = true
         lastGuardTriggerTime = now
 
-        Log.i(GUARD_TAG, "AI_GUARDIAN_UNINSTALL_GUARD: INTERRUPT_ATTEMPT")
+        Log.i(GUARD_TAG, "AI_GUARDIAN_UNINSTALL_GUARD: DETECTED")
 
-        // Attempt to interrupt the uninstall confirmation via back action
-        val interruptResult = try {
-            performGlobalAction(GLOBAL_ACTION_BACK)
-        } catch (e: Exception) {
-            Log.e(GUARD_TAG, "GLOBAL_ACTION_BACK failed: ${e.message}")
-            false
-        }
-        Log.i(GUARD_TAG, "AI_GUARDIAN_UNINSTALL_GUARD: INTERRUPT_RESULT=$interruptResult")
-
-        // Launch the password protection gate
+        // Launch the password protection gate ON TOP of the uninstall dialog.
+        // We do NOT call GLOBAL_ACTION_BACK — the uninstall confirmation dialog
+        // must remain underneath so the user can confirm after authentication.
         try {
             UninstallGuardActivity.launch(applicationContext)
             Log.i(GUARD_TAG, "AI_GUARDIAN_UNINSTALL_GUARD: PASSWORD_GATE_SHOWN")
         } catch (e: Exception) {
             Log.e(GUARD_TAG, "Failed to launch UninstallGuardActivity: ${e.message}")
-            // If we can't show the gate, at least the back action interrupted the flow
         }
     }
 
@@ -907,6 +940,25 @@ class AIGuardianAccessibilityService : AccessibilityService() {
     fun clearUninstallGuard() {
         uninstallGuardActive = false
         Log.i(GUARD_TAG, "AI_GUARDIAN_UNINSTALL_GUARD: GUARD_CLEARED")
+    }
+
+    /**
+     * Called by UninstallGuardActivity when the password is verified successfully.
+     * Sets the authorized flag so that re-launching the uninstall confirmation
+     * doesn't trigger another password prompt for the same attempt.
+     */
+    fun setUninstallAuthorized() {
+        uninstallAuthorized = true
+        Log.i(GUARD_TAG, "AI_GUARDIAN_UNINSTALL_GUARD: AUTHORIZED")
+    }
+
+    /**
+     * Clears the authorized state when the user leaves the uninstall flow.
+     * Called when the foreground package is no longer the Package Installer.
+     */
+    fun clearUninstallAuthorized() {
+        uninstallAuthorized = false
+        Log.i(GUARD_TAG, "AI_GUARDIAN_UNINSTALL_GUARD: AUTHORIZATION_CLEARED")
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -940,6 +992,12 @@ class AIGuardianAccessibilityService : AccessibilityService() {
         // below runs regardless and re-arms on the departure/arrival edge.
         val now = System.currentTimeMillis()
         val isWindowStateChange = event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+
+        // If already authorized for this Accessibility Settings attempt, don't re-prompt
+        if (settingsAuthorized) {
+            Log.d(SETTINGS_GUARD_TAG, "Already authorized for accessibility settings, skipping re-prompt")
+            return
+        }
 
         // ── LEAVE DETECTION ──────────────────────────────────────────────────
         // The user has left the protected AI Guardian Accessibility page.
@@ -1277,6 +1335,25 @@ class AIGuardianAccessibilityService : AccessibilityService() {
         }
         settingsAccessibilityGuardActive = false
         Log.i(SETTINGS_GUARD_TAG, "AI_GUARDIAN_SETTINGS_ACCESSIBILITY_GUARD: GUARD_CLEARED (authorizedVisit=$settingsAuthorizedVisit)")
+    }
+
+    /**
+     * Called by SettingsAccessibilityGuardActivity when the password is verified successfully.
+     * Sets the authorized flag so that re-launching the Accessibility Settings
+     * doesn't trigger another password prompt for the same attempt.
+     */
+    fun setSettingsAuthorized() {
+        settingsAuthorized = true
+        Log.i(SETTINGS_GUARD_TAG, "AI_GUARDIAN_SETTINGS_ACCESSIBILITY_GUARD: AUTHORIZED")
+    }
+
+    /**
+     * Clears the authorized state when the user leaves the Accessibility Settings flow.
+     * Called when the foreground package is no longer Settings or the protected page.
+     */
+    fun clearSettingsAuthorized() {
+        settingsAuthorized = false
+        Log.i(SETTINGS_GUARD_TAG, "AI_GUARDIAN_SETTINGS_ACCESSIBILITY_GUARD: AUTHORIZATION_CLEARED")
     }
 
     /**

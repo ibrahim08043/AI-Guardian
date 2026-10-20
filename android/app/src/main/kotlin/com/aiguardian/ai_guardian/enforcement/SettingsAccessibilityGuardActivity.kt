@@ -135,38 +135,32 @@ class SettingsAccessibilityGuardActivity : Activity() {
      * Return to the Android Settings Accessibility screen.
      *
      * Strategy:
-     * 1. Just finish() — the underlying Settings task should resume from the back stack.
-     * 2. If Settings task was destroyed, fall back to opening Accessibility Settings
-     *    via the standard Android Intent.
+     * 1. Mark authorization as successful in the AccessibilityService so
+     *    re-detection doesn't trigger another guard.
+     * 2. Launch the Accessibility Settings intent.
+     *    This brings the user back to the Accessibility settings page.
+     * 3. Finish this guard activity.
      *
      * This ensures the user returns to Settings, NOT to AI Guardian's main app.
      */
     private fun returnToSettings() {
         try {
-            // Simply finish this activity. The Settings task underneath should resume.
-            // We launched with NEW_TASK | NO_HISTORY, so this activity won't stay in history.
-            finish()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to finish guard activity: ${e.message}")
-            // Fallback: open Accessibility Settings directly
-            openAccessibilitySettingsFallback()
-        }
-    }
+            // Mark as authorized so the AccessibilityService doesn't re-prompt
+            AIGuardianAccessibilityService.instance?.setSettingsAuthorized()
 
-    /**
-     * Fallback: open Android Accessibility Settings if the Settings task
-     * was destroyed and cannot be resumed.
-     */
-    private fun openAccessibilitySettingsFallback() {
-        try {
+            // Launch the Accessibility Settings
             val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
             }
             startActivity(intent)
-            Log.i(TAG, "Opened Accessibility Settings as fallback")
+            Log.i(TAG, "Launched Accessibility Settings")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to open Accessibility Settings fallback: ${e.message}")
+            Log.e(TAG, "Failed to launch Accessibility Settings: ${e.message}")
+            // Fallback: just finish if we can't launch the intent
+            finish()
+        } finally {
+            finish()
         }
     }
 

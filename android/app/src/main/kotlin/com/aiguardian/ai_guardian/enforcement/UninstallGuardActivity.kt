@@ -3,6 +3,7 @@ package com.aiguardian.ai_guardian.enforcement
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.view.inputmethod.InputMethodManager
@@ -33,9 +34,9 @@ import com.aiguardian.ai_guardian.service.AIGuardianAccessibilityService
  * directly render Flutter widgets.
  *
  * FAIL-CLOSED behavior:
- * - Correct password → dismiss protection screen, return to AI Guardian
+ * - Correct password → dismiss protection screen, return to Package Installer uninstall flow
  * - Wrong password → remain on screen with error
- * - Back/Cancel → return to AI Guardian, uninstall remains interrupted
+ * - Back/Cancel → return to Package Installer uninstall flow, uninstall remains interrupted
  */
 class UninstallGuardActivity : Activity() {
 
@@ -87,8 +88,8 @@ class UninstallGuardActivity : Activity() {
 
             if (isCorrect) {
                 Log.i(TAG, "AI_GUARDIAN_UNINSTALL_GUARD: PASSWORD_SUCCESS")
-                // Password correct — dismiss protection, return to AI Guardian
-                openAIGuardian()
+                // Password correct — dismiss protection, return to uninstall flow
+                returnToUninstallFlow()
             } else {
                 Log.i(TAG, "AI_GUARDIAN_UNINSTALL_GUARD: PASSWORD_FAILED")
                 errorMessage.text = "Incorrect password. Access denied."
@@ -99,7 +100,7 @@ class UninstallGuardActivity : Activity() {
 
         cancelButton.setOnClickListener {
             Log.i(TAG, "AI_GUARDIAN_UNINSTALL_GUARD: PASSWORD_CANCELLED")
-            openAIGuardian()
+            returnToUninstallFlow()
         }
     }
 
@@ -121,17 +122,34 @@ class UninstallGuardActivity : Activity() {
     }
 
     /**
-     * Return to AI Guardian's main activity and dismiss this protection screen.
+     * Return to the original Package Installer uninstall confirmation screen.
+     *
+     * Strategy:
+     * 1. Mark authorization as successful in the AccessibilityService so
+     *    re-detection doesn't trigger another guard.
+     * 2. Launch the uninstall confirmation intent for AI Guardian's package.
+     *    This recreates the confirmation dialog if it was dismissed.
+     * 3. Finish this guard activity.
+     *
+     * This ensures the user returns to the uninstall flow, NOT to AI Guardian's main app.
      */
-    private fun openAIGuardian() {
+    private fun returnToUninstallFlow() {
         try {
-            val intent = Intent(this, MainActivity::class.java).apply {
+            // Mark as authorized so the AccessibilityService doesn't re-prompt
+            AIGuardianAccessibilityService.instance?.setUninstallAuthorized()
+
+            // Launch the uninstall confirmation for our package
+            val packageName = "com.aiguardian.ai_guardian"
+            val intent = Intent(Intent.ACTION_DELETE, Uri.parse("package:$packageName")).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
             }
             startActivity(intent)
+            Log.i(TAG, "Launched uninstall confirmation for $packageName")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to launch MainActivity: ${e.message}")
+            Log.e(TAG, "Failed to launch uninstall confirmation: ${e.message}")
+            // Fallback: just finish if we can't launch the intent
+            finish()
         } finally {
             finish()
         }
@@ -140,7 +158,7 @@ class UninstallGuardActivity : Activity() {
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
         Log.i(TAG, "AI_GUARDIAN_UNINSTALL_GUARD: PASSWORD_CANCELLED (back)")
-        openAIGuardian()
+        returnToUninstallFlow()
     }
 
     override fun onDestroy() {
